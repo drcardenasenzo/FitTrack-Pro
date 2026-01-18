@@ -1,983 +1,946 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  onAuthStateChanged
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  addDoc,
-  updateDoc, 
-  onSnapshot, 
-  query, 
-  serverTimestamp
-} from 'firebase/firestore';
-import { 
-  Plus, 
-  Trash2, 
-  Edit2, 
-  ChevronLeft, 
-  User, 
-  TrendingUp, 
-  Calendar as CalendarIcon, 
-  Home as HomeIcon, 
-  Search, 
-  Check, 
-  X, 
-  Settings,
-  LogOut,
-  AlertTriangle,
-  Database,
-  ShieldAlert
-} from 'lucide-react';
-
-// --- CONFIGURACIÓN FIREBASE ---
-const firebaseConfig = {
-  apiKey: "AIzaSyD3ZxXGQMXrNHdtokkguJhf_fQpwXKgUMc",
-  authDomain: "fittrack-pro-de102.firebaseapp.com",
-  projectId: "fittrack-pro-de102",
-  storageBucket: "fittrack-pro-de102.firebasestorage.app",
-  messagingSenderId: "1085176264103",
-  appId: "1:1085176264103:web:90bbe5a1b2f5463d637282"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-// ID del proyecto
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fittrack-pro-v1';
-
-// --- UTILIDADES ---
-const CALS_PER_KG = 7700;
-
-const formatDate = (date) => {
-  const d = new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const getRelativeDateLabel = (dateStr) => {
-  const today = formatDate(new Date());
-  if (dateStr === today) return 'Hoy';
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (dateStr === formatDate(yesterday)) return 'Ayer';
-  return dateStr;
-};
-
-// --- COMPONENTES UI ---
-
-const Button = ({ children, onClick, variant = 'primary', className = '', fullWidth = false }) => {
-  const baseStyle = "px-4 py-3 rounded-xl font-semibold transition-all duration-200 active:scale-95 flex items-center justify-center gap-2";
-  const variants = {
-    primary: "bg-green-500 text-black hover:bg-green-400 shadow-[0_0_15px_rgba(34,197,94,0.3)]",
-    secondary: "bg-gray-800 text-white hover:bg-gray-700",
-    danger: "bg-red-500/10 text-red-500 hover:bg-red-500/20",
-    ghost: "bg-transparent text-gray-400 hover:text-white"
-  };
-  
-  return (
-    <button 
-      onClick={onClick} 
-      className={`${baseStyle} ${variants[variant]} ${fullWidth ? 'w-full' : ''} ${className}`}
-    >
-      {children}
-    </button>
-  );
-};
-
-const Input = ({ label, value, onChange, type = "text", placeholder, icon }) => (
-  <div className="mb-4">
-    <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider font-medium ml-1">{label}</label>
-    <div className="relative">
-      <input
-        type={type}
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        className="w-full bg-gray-800 text-white p-4 rounded-xl outline-none focus:ring-2 focus:ring-green-500/50 transition-all placeholder-gray-600"
-      />
-      {icon && <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">{icon}</div>}
-    </div>
-  </div>
-);
-
-const AnimatedRing = ({ progress, value, label, color, size = 120, subLabel }) => {
-  const strokeWidth = 8;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = radius * 2 * Math.PI;
-  const offset = circumference - (Math.min(progress, 1) * circumference);
-  
-  return (
-    <div className="flex flex-col items-center justify-center relative" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="transform -rotate-90">
-        <circle
-          stroke="#1f2937"
-          strokeWidth={strokeWidth}
-          fill="transparent"
-          r={radius}
-          cx={size / 2}
-          cy={size / 2}
-        />
-        <circle
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeDasharray={`${circumference} ${circumference}`}
-          style={{ strokeDashoffset: offset, transition: 'stroke-dashoffset 1s ease-in-out, stroke 0.5s ease' }}
-          strokeLinecap="round"
-          fill="transparent"
-          r={radius}
-          cx={size / 2}
-          cy={size / 2}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-xl font-bold text-white">{value}</span>
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">{label}</span>
-        {subLabel && <span className="text-[10px] text-gray-500 mt-1">{subLabel}</span>}
-      </div>
-    </div>
-  );
-};
-
-// --- APP PRINCIPAL ---
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [authError, setAuthError] = useState(null);
-  const [firestoreError, setFirestoreError] = useState(null);
-  const [profiles, setProfiles] = useState([]);
-  const [currentProfile, setCurrentProfile] = useState(null);
-  const [view, setView] = useState('loading'); 
-  const [activeTab, setActiveTab] = useState('home');
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  
-  // Datos
-  const [logs, setLogs] = useState([]);
-  const [foods, setFoods] = useState([]);
-  const [currentDate, setCurrentDate] = useState(formatDate(new Date()));
-  const [isToastVisible, setIsToastVisible] = useState(false);
-  const [toastMessage, setToastMessage] = useState('');
-
-  // UI
-  const [showAddFood, setShowAddFood] = useState(false);
-
-  // --- AUTH & INIT ---
-  useEffect(() => {
-    const initAuth = async () => {
-      // Si ya tenemos usuario (persistencia), no intentamos loguear de nuevo
-      if (auth.currentUser) {
-        setUser(auth.currentUser);
-        return;
-      }
-      try {
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error("Error en autenticación:", error);
-        setAuthError(error);
-      }
-    };
-    initAuth();
-    return onAuthStateChanged(auth, (u) => {
-      if (u) setUser(u);
-    });
-  }, []);
-
-  // --- CARGAR PERFILES ---
-  useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'));
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FitTrack Pro</title>
     
-    const unsub = onSnapshot(q, (snapshot) => {
-      const p = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setProfiles(p);
-      if (p.length === 0) setView('create-profile');
-      else if (!currentProfile && view !== 'app' && view !== 'create-profile') setView('profiles');
-      setFirestoreError(null);
-    }, (error) => {
-      console.error("Error Firestore (Perfiles):", error.code, error.message);
-      setFirestoreError(error);
-    });
-
-    return () => unsub();
-  }, [user]);
-
-  // --- CARGAR DATOS ---
-  useEffect(() => {
-    if (!user || !currentProfile) return;
-
-    const qLogs = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs'));
-    const unsubLogs = onSnapshot(qLogs, (snapshot) => {
-      const l = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setLogs(l);
-    }, (error) => {
-      console.error("Error Firestore (Logs):", error.code, error.message);
-      if (!firestoreError) setFirestoreError(error);
-    });
-
-    const qFoods = query(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'));
-    const unsubFoods = onSnapshot(qFoods, (snapshot) => {
-      const f = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setFoods(f);
-    });
-
-    return () => {
-      unsubLogs();
-      unsubFoods();
-    };
-  }, [user, currentProfile]);
-
-  useEffect(() => {
-    if (profiles.length === 1 && view === 'profiles' && !currentProfile) {
-      setCurrentProfile(profiles[0]);
-      setView('app');
-    }
-  }, [profiles, view, currentProfile]);
-
-  // --- HELPERS LÓGICOS ---
-
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setIsToastVisible(true);
-    setTimeout(() => setIsToastVisible(false), 2000);
-  };
-
-  const getDayData = (date) => {
-    return logs.find(l => l.date === date) || { date, entries: [] };
-  };
-
-  const getDayTotals = (date) => {
-    const dayData = getDayData(date);
-    if (!dayData || !dayData.entries) return { cals: 0, prot: 0 };
-    return dayData.entries.reduce((acc, curr) => ({
-      cals: acc.cals + curr.calories,
-      prot: acc.prot + curr.protein
-    }), { cals: 0, prot: 0 });
-  };
-
-  const getGoalType = (profile) => {
-    if (!profile) return 'maint';
-    if (profile.targetCalories < profile.maintenanceCalories) return 'deficit';
-    if (profile.targetCalories > profile.maintenanceCalories) return 'surplus';
-    return 'maint';
-  };
-
-  const getDayStatus = (totals, profile) => {
-    const goalType = getGoalType(profile);
-    const { targetCalories, targetProtein } = profile;
-    const proteinPass = totals.prot >= targetProtein;
-    let caloriesPass = false;
-    if (goalType === 'deficit') {
-      caloriesPass = totals.cals <= targetCalories;
-    } else {
-      const min = targetCalories * 0.9;
-      const max = targetCalories * 1.1;
-      caloriesPass = totals.cals >= min && totals.cals <= max;
-    }
-    return { passed: proteinPass && caloriesPass, proteinPass, caloriesPass };
-  };
-
-  const getCircleColor = (current, target, isDeficit) => {
-    const pct = current / target;
-    if (isDeficit) {
-      if (pct > 1) return '#ef4444'; 
-      if (pct >= 0.8) return '#22c55e'; 
-      return '#f97316'; 
-    } else {
-      if (pct < 0.8) return '#f97316'; 
-      if (pct > 1.1) return '#ef4444'; 
-      return '#22c55e'; 
-    }
-  };
-
-  const getProteinColor = (current, target) => {
-    const pct = current / target;
-    if (pct >= 1) return '#22c55e';
-    if (pct >= 0.8) return '#f97316';
-    return '#ef4444';
-  };
-
-  const calculateWeightEstimation = () => {
-    if (!currentProfile) return { estimated: 0, change: 0 };
-    let totalCalsDiff = 0;
-    const sortedLogs = [...logs].sort((a,b) => new Date(a.date) - new Date(b.date));
-    sortedLogs.forEach(log => {
-      const dayTotals = log.entries.reduce((acc, curr) => acc + curr.calories, 0);
-      totalCalsDiff += (dayTotals - currentProfile.maintenanceCalories);
-    });
-    const weightChangeKg = totalCalsDiff / CALS_PER_KG;
-    const currentEstimated = parseFloat(currentProfile.initialWeight) + weightChangeKg;
-    return {
-      estimated: currentEstimated.toFixed(2),
-      change: weightChangeKg.toFixed(2)
-    };
-  };
-
-  // --- ACTIONS ---
-
-  const handleSaveProfile = async (data) => {
-    if (!user) return;
-    try {
-      if (isEditingProfile && currentProfile) {
-        const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id);
-        await updateDoc(profileRef, data);
-        setCurrentProfile({ ...currentProfile, ...data });
-        setView('app');
-        setIsEditingProfile(false);
-        showToast('Perfil actualizado');
-      } else {
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'), {
-          ...data,
-          createdAt: serverTimestamp()
-        });
-        setIsEditingProfile(false);
-        setView('profiles');
-      }
-    } catch (e) {
-      console.error("Error guardando perfil:", e);
-      // Si falla por permisos, activar UI global
-      if (e.code === 'permission-denied') setFirestoreError(e);
-      else showToast('Error al guardar');
-    }
-  };
-
-  const handleAddFood = async (foodData) => {
-    try {
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'), {
-        ...foodData,
-        createdBy: currentProfile.id
-      });
-      showToast('Alimento guardado');
-    } catch (e) {
-      console.error(e);
-      if (e.code === 'permission-denied') setFirestoreError(e);
-    }
-  };
-
-  const handleLogFood = async (food, grams) => {
-    const factor = grams / 100;
-    const entry = {
-      foodId: food.id,
-      name: food.name,
-      emoji: food.emoji || '',
-      calories: Math.round(food.calories * factor),
-      protein: Math.round(food.protein * factor),
-      grams: parseInt(grams),
-      timestamp: Date.now()
-    };
-
-    const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
-    const dayDoc = logs.find(l => l.date === currentDate);
+    <!-- 1. Estilos: Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
     
-    try {
-      if (dayDoc) {
-        await updateDoc(dayRef, { entries: [...dayDoc.entries, entry] });
-      } else {
-        await setDoc(dayRef, { date: currentDate, entries: [entry] });
-      }
-      showToast(`${entry.emoji} ${entry.name} agregado`);
-      setShowAddFood(false);
-    } catch (e) {
-      console.error(e);
-      if (e.code === 'permission-denied') setFirestoreError(e);
-    }
-  };
+    <!-- 2. Motor: Babel para traducir React en el navegador -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  const handleDeleteEntry = async (entryIndex) => {
-    const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
-    const dayDoc = logs.find(l => l.date === currentDate);
-    if (!dayDoc) return;
-    const newEntries = dayDoc.entries.filter((_, idx) => idx !== entryIndex);
-    try {
-      await updateDoc(dayRef, { entries: newEntries });
-    } catch(e) {
-       console.error(e);
-       if (e.code === 'permission-denied') setFirestoreError(e);
-    }
-  };
-
-  // --- VISTAS ---
-
-  if (authError) return (
-    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
-      <div className="bg-red-500/10 p-6 rounded-2xl border border-red-500/50 max-w-md w-full">
-        <AlertTriangle size={48} className="text-red-500 mx-auto mb-4" />
-        <h2 className="text-red-500 text-xl font-bold mb-2">Error de Autenticación</h2>
-        <p className="text-gray-300 mb-4 font-medium">Firebase rechazó la conexión anónima.</p>
-        <button onClick={() => window.location.reload()} className="mt-4 w-full py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600 transition-colors">Reintentar</button>
-      </div>
-    </div>
-  );
-
-  // MANEJO DE ERROR DE PERMISOS / BASE DE DATOS
-  if (firestoreError) {
-    const isPermissionError = firestoreError.code === 'permission-denied' || firestoreError.message?.includes('permission');
-    
-    return (
-      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6 text-center">
-        <div className={`p-6 rounded-2xl border max-w-md w-full ${isPermissionError ? 'bg-purple-500/10 border-purple-500/50' : 'bg-orange-500/10 border-orange-500/50'}`}>
-          {isPermissionError ? (
-            <ShieldAlert size={48} className="text-purple-500 mx-auto mb-4" />
-          ) : (
-            <Database size={48} className="text-orange-500 mx-auto mb-4" />
-          )}
-          
-          <h2 className={`${isPermissionError ? 'text-purple-500' : 'text-orange-500'} text-xl font-bold mb-2`}>
-            {isPermissionError ? 'Reglas de Seguridad Bloqueadas' : 'Base de Datos no disponible'}
-          </h2>
-          
-          <p className="text-gray-300 mb-4 font-medium text-sm">
-            {isPermissionError 
-              ? 'Tus reglas de Firestore están bloqueando el acceso. Pega esto en la pestaña "Rules" de tu consola Firebase:' 
-              : 'Asegúrate de haber creado la base de datos en modo "test".'}
-          </p>
-          
-          {isPermissionError && (
-             <div className="bg-black/50 p-4 rounded-xl text-left font-mono text-[10px] text-green-400 mb-4 overflow-x-auto border border-gray-700">
-               <pre>
-{`rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
-    }
-  }
-}`}
-               </pre>
-             </div>
-          )}
-          
-          <button onClick={() => window.location.reload()} className={`mt-2 w-full py-3 text-white font-bold rounded-xl transition-colors ${isPermissionError ? 'bg-purple-600 hover:bg-purple-700' : 'bg-orange-500 hover:bg-orange-600'}`}>
-            Ya actualicé las reglas, Reintentar
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === 'loading') return <div className="min-h-screen bg-gray-900 flex items-center justify-center text-green-500 font-bold animate-pulse">CONECTANDO...</div>;
-
-  if (view === 'create-profile') return (
-    <CreateProfile 
-      initialData={isEditingProfile ? currentProfile : null}
-      onSave={handleSaveProfile} 
-      onCancel={() => {
-        setIsEditingProfile(false);
-        if (profiles.length > 0) setView(isEditingProfile ? 'app' : 'profiles');
-      }} 
-    />
-  );
-  
-  if (view === 'profiles') return (
-    <div className="min-h-screen bg-gray-900 p-6 flex flex-col justify-center">
-      <h1 className="text-3xl font-bold text-white mb-8 text-center">¿Quién eres?</h1>
-      <div className="space-y-4">
-        {profiles.map(p => (
-          <button 
-            key={p.id}
-            onClick={() => { setCurrentProfile(p); setView('app'); }}
-            className="w-full bg-gray-800 p-6 rounded-2xl flex items-center gap-4 hover:bg-gray-700 transition-all border border-gray-700"
-          >
-            <div className="w-12 h-12 rounded-full bg-green-500/20 text-green-500 flex items-center justify-center font-bold text-xl">{p.name.charAt(0).toUpperCase()}</div>
-            <div className="text-left">
-              <h3 className="text-xl font-bold text-white">{p.name}</h3>
-              <p className="text-sm text-gray-400">{getGoalType(p) === 'deficit' ? 'Perder peso' : getGoalType(p) === 'surplus' ? 'Ganar masa' : 'Mantenimiento'}</p>
-            </div>
-          </button>
-        ))}
-        <button 
-          onClick={() => { setIsEditingProfile(false); setView('create-profile'); }}
-          className="w-full p-4 rounded-xl border-2 border-dashed border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 flex items-center justify-center gap-2 mt-8"
-        >
-          <Plus size={20} /> Nuevo Perfil
-        </button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 font-sans pb-24 relative overflow-hidden">
-      {/* HEADER */}
-      {activeTab === 'home' && (
-        <header className="px-6 pt-12 pb-4 flex justify-between items-center bg-gradient-to-b from-gray-900 via-gray-900 to-transparent sticky top-0 z-10">
-          <div>
-             <button onClick={() => setView('profiles')} className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors">
-               <span className="text-xs font-bold bg-gray-800 px-2 py-1 rounded-lg border border-gray-700">{currentProfile.name}</span>
-             </button>
-             <h2 className="text-2xl font-bold mt-1 text-white">{getRelativeDateLabel(currentDate)}</h2>
-          </div>
-          <div className="flex gap-2">
-            <button 
-               onClick={() => { const d = new Date(currentDate); d.setDate(d.getDate() - 1); setCurrentDate(formatDate(d)); }}
-               className="p-2 bg-gray-800 rounded-full hover:bg-gray-700 active:scale-95 transition-transform"
-            >
-              <ChevronLeft size={20} />
-            </button>
-             <button 
-               onClick={() => setCurrentDate(formatDate(new Date()))}
-               className={`p-2 bg-gray-800 rounded-full hover:bg-gray-700 active:scale-95 transition-transform ${currentDate === formatDate(new Date()) ? 'opacity-50 cursor-default' : ''}`}
-            >
-              <CalendarIcon size={20} />
-            </button>
-          </div>
-        </header>
-      )}
-
-      {/* CONTENT SWITCHER */}
-      <main className="px-6 animate-fade-in">
-        {activeTab === 'home' && (
-          <HomeView 
-            profile={currentProfile} 
-            totals={getDayTotals(currentDate)}
-            dayStatus={getDayStatus(getDayTotals(currentDate), currentProfile)}
-            entries={getDayData(currentDate).entries || []}
-            goalType={getGoalType(currentProfile)}
-            onAddFood={() => setShowAddFood(true)}
-            onDeleteEntry={handleDeleteEntry}
-            getCircleColor={getCircleColor}
-            getProteinColor={getProteinColor}
-          />
-        )}
-        {activeTab === 'history' && (
-          <HistoryView 
-            logs={logs} 
-            profile={currentProfile} 
-            getDayTotals={getDayTotals}
-            getDayStatus={getDayStatus}
-            onDateSelect={(d) => { setCurrentDate(d); setActiveTab('home'); }}
-          />
-        )}
-        {activeTab === 'profile' && (
-          <ProfileStatsView 
-            profile={currentProfile} 
-            weightStats={calculateWeightEstimation()}
-            onLogout={() => setView('profiles')}
-            onEdit={() => { setIsEditingProfile(true); setView('create-profile'); }} 
-          />
-        )}
-      </main>
-
-      {/* BOTTOM NAV */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-md border-t border-gray-800 p-2 pb-6 z-40">
-        <div className="flex justify-around items-center max-w-md mx-auto">
-          <NavBtn icon={<HomeIcon size={24} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} label="Home" />
-          <NavBtn icon={<CalendarIcon size={24} />} active={activeTab === 'history'} onClick={() => setActiveTab('history')} label="Historial" />
-          <NavBtn icon={<User size={24} />} active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} label="Perfil" />
-        </div>
-      </nav>
-
-      {/* MODAL ADD FOOD */}
-      {showAddFood && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end animate-fade-in">
-          <div className="bg-gray-900 rounded-t-3xl p-6 h-[85vh] overflow-hidden flex flex-col relative border-t border-gray-800 shadow-2xl">
-            <button onClick={() => setShowAddFood(false)} className="absolute top-4 right-4 p-2 bg-gray-800 rounded-full text-gray-400"><X size={20} /></button>
-            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-              <span className="bg-green-500/20 text-green-500 p-2 rounded-lg"><Plus size={18} /></span>
-              Agregar Alimento
-            </h3>
-            <FoodSelector 
-              foods={foods} 
-              onAddFoodToDb={handleAddFood}
-              onLogFood={handleLogFood}
-              profileId={currentProfile.id}
-              shareFoods={currentProfile.shareFoods}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* TOAST */}
-      {isToastVisible && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full shadow-xl border border-green-500/30 flex items-center gap-2 animate-bounce-in z-50">
-          <Check size={16} className="text-green-500" />
-          <span className="text-sm font-medium">{toastMessage}</span>
-        </div>
-      )}
-
-      <style>{`
-        .animate-fade-in { animation: fadeIn 0.3s ease-out; }
-        .animate-bounce-in { animation: bounceIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+    <!-- Estilos base -->
+    <style>
+        body { background-color: #111827; color: #f3f4f6; -webkit-tap-highlight-color: transparent; }
+        /* Animaciones del original */
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes bounceIn { from { opacity: 0; transform: translate(-50%, 20px); } to { opacity: 1; transform: translate(-50%, 0); } }
-        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+        .animate-bounce-in { animation: bounceIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        
+        /* Fix inputs numéricos */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type=number] { -moz-appearance: textfield; }
-      `}</style>
-    </div>
-  );
-}
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-const HomeView = ({ profile, totals, dayStatus, entries, goalType, onAddFood, onDeleteEntry, getCircleColor, getProteinColor }) => {
-  const isDeficit = goalType === 'deficit';
-  return (
-    <div className="space-y-8 pb-10">
-      <div className="flex justify-center items-center gap-4 mt-4">
-        <AnimatedRing 
-          value={totals.cals} 
-          label="Kcal" 
-          subLabel={`Meta: ${profile.targetCalories}`}
-          progress={totals.cals / profile.targetCalories}
-          color={getCircleColor(totals.cals, profile.targetCalories, isDeficit)}
-          size={140}
-        />
-        <AnimatedRing 
-          value={totals.prot} 
-          label="Prot (g)" 
-          subLabel={`Meta: ${profile.targetProtein}`}
-          progress={totals.prot / profile.targetProtein}
-          color={getProteinColor(totals.prot, profile.targetProtein)}
-          size={140}
-        />
-      </div>
-      <div className="flex justify-center">
-        <div className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm font-bold border transition-colors ${
-          dayStatus.passed ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-gray-800 border-gray-700 text-gray-400'
-        }`}>
-          {dayStatus.passed ? <Check size={16} /> : <div className="w-4 h-4 rounded-full border-2 border-current opacity-50" />}
-          {dayStatus.passed ? 'Objetivo Cumplido' : 'En progreso'}
-        </div>
-      </div>
-      <div className="grid place-items-center">
-        <button onClick={onAddFood} className="w-16 h-16 bg-gradient-to-tr from-green-500 to-emerald-400 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.4)] flex items-center justify-center text-black transition-transform hover:scale-105 active:scale-95">
-          <Plus size={32} />
-        </button>
-        <span className="text-xs text-gray-500 mt-3 font-medium tracking-wide">AGREGAR ALIMENTO</span>
-      </div>
-      <div className="space-y-4">
-        <div className="flex justify-between items-end border-b border-gray-800 pb-2">
-          <h3 className="text-lg font-bold text-white">Consumido hoy</h3>
-        </div>
-        {entries.length === 0 ? (
-          <div className="text-center py-10 text-gray-600 italic">No hay alimentos registrados hoy</div>
-        ) : (
-          <div className="space-y-3">
-            {entries.map((entry, idx) => (
-              <div key={idx} className="bg-gray-800 p-4 rounded-xl flex items-center justify-between group border border-gray-800 hover:border-gray-700 transition-colors">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl">{entry.emoji || '🍽️'}</span>
-                  <div>
-                    <p className="font-semibold text-white">{entry.name}</p>
-                    <p className="text-xs text-gray-400 flex gap-2">
-                       <span>{entry.grams}g</span><span className="text-gray-600">•</span><span className="text-green-400">{entry.calories} kcal</span><span className="text-gray-600">•</span><span className="text-blue-400">{entry.protein}g prot</span>
-                    </p>
-                  </div>
+    <!-- 3. Lógica de la Aplicación -->
+    <script type="text/babel" data-type="module">
+        // --- IMPORTACIONES CDN (Adaptadas para funcionar sin instalación) ---
+        import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            onAuthStateChanged 
+        } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
+        import { 
+            getFirestore, 
+            collection, 
+            doc, 
+            setDoc, 
+            addDoc, 
+            updateDoc, 
+            onSnapshot, 
+            query, 
+            serverTimestamp 
+        } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
+        // Importamos TODOS los iconos usados en tu código original
+        import { 
+            Plus, Trash2, Edit2, ChevronLeft, User, TrendingUp, Calendar as CalendarIcon, 
+            Home as HomeIcon, Search, Check, X, Settings, LogOut, AlertTriangle, Database, ShieldAlert 
+        } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
+
+        // --- CONFIGURACIÓN FIREBASE (Tu configuración original) ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyD3ZxXGQMXrNHdtokkguJhf_fQpwXKgUMc",
+            authDomain: "fittrack-pro-de102.firebaseapp.com",
+            projectId: "fittrack-pro-de102",
+            storageBucket: "fittrack-pro-de102.firebasestorage.app",
+            messagingSenderId: "1085176264103",
+            appId: "1:1085176264103:web:90bbe5a1b2f5463d637282"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // ID del proyecto (Mantenemos tu lógica de fallback)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'fittrack-pro-v1';
+
+        // --- UTILIDADES ---
+        const CALS_PER_KG = 7700;
+
+        const formatDate = (date) => {
+            const d = new Date(date);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const getRelativeDateLabel = (dateStr) => {
+            const today = formatDate(new Date());
+            if (dateStr === today) return 'Hoy';
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            if (dateStr === formatDate(yesterday)) return 'Ayer';
+            return dateStr;
+        };
+
+        // --- COMPONENTES UI BASE ---
+
+        const Button = ({ children, onClick, variant = 'primary', className = '', fullWidth = false, disabled = false }) => {
+            const baseStyle = "px-4 py-3 rounded-xl font-semibold transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
+            const variants = {
+                primary: "bg-green-500 text-black hover:bg-green-400 shadow-[0_0_15px_rgba(34,197,94,0.3)]",
+                secondary: "bg-gray-800 text-white hover:bg-gray-700 border border-gray-700",
+                danger: "bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20",
+                ghost: "bg-transparent text-gray-400 hover:text-white"
+            };
+            return (
+                <button onClick={onClick} disabled={disabled} className={`${baseStyle} ${variants[variant]} ${fullWidth ? 'w-full' : ''} ${className}`}>
+                    {children}
+                </button>
+            );
+        };
+
+        const Input = ({ label, value, onChange, type = "text", placeholder, icon }) => (
+            <div className="mb-4 w-full">
+                <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider font-medium ml-1">{label}</label>
+                <div className="relative">
+                    <input
+                        type={type}
+                        value={value}
+                        onChange={onChange}
+                        placeholder={placeholder}
+                        className="w-full bg-gray-800 text-white p-4 rounded-xl outline-none focus:ring-2 focus:ring-green-500/50 transition-all placeholder-gray-600 border border-gray-700"
+                    />
+                    {icon && <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">{icon}</div>}
                 </div>
-                <button onClick={() => onDeleteEntry(idx)} className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"><Trash2 size={16} /></button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const HistoryView = ({ logs, profile, getDayTotals, getDayStatus, onDateSelect }) => {
-  const today = new Date();
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, i) => {
-    const d = new Date(today.getFullYear(), today.getMonth(), i + 1);
-    return formatDate(d);
-  });
-
-  return (
-    <div className="pt-8">
-      <h2 className="text-2xl font-bold mb-6">Historial</h2>
-      <div className="bg-gray-800 p-6 rounded-2xl mb-6">
-        <h3 className="text-sm uppercase tracking-wider text-gray-400 mb-4 font-bold">Este Mes</h3>
-        <div className="grid grid-cols-7 gap-2">
-          {days.map(dateStr => {
-             const totals = getDayTotals(dateStr);
-             const status = getDayStatus(totals, profile);
-             const hasData = totals.cals > 0;
-             const isToday = dateStr === formatDate(new Date());
-             let bgClass = "bg-gray-900 text-gray-600";
-             if (hasData) {
-               bgClass = status.passed ? "bg-green-500 text-black font-bold shadow-[0_0_10px_rgba(34,197,94,0.3)]" : "bg-red-500/20 text-red-500 border border-red-500/30";
-             }
-             if (isToday) bgClass += " ring-2 ring-white";
-             return (
-               <button key={dateStr} onClick={() => onDateSelect(dateStr)} className={`aspect-square rounded-lg flex flex-col items-center justify-center text-xs transition-all hover:scale-110 ${bgClass}`}>
-                 <span>{parseInt(dateStr.split('-')[2])}</span>
-               </button>
-             )
-          })}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-gray-800 p-5 rounded-2xl">
-           <p className="text-gray-400 text-xs uppercase font-bold">Días Cumplidos</p>
-           <p className="text-3xl font-bold text-green-500 mt-2">{logs.filter(l => getDayStatus(getDayTotals(l.date), profile).passed).length}</p>
-        </div>
-        <div className="bg-gray-800 p-5 rounded-2xl">
-           <p className="text-gray-400 text-xs uppercase font-bold">Promedio Kcal</p>
-           <p className="text-3xl font-bold text-white mt-2">{logs.length > 0 ? Math.round(logs.reduce((acc, curr) => acc + getDayTotals(curr.date).cals, 0) / logs.length) : 0}</p>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const ProfileStatsView = ({ profile, weightStats, onLogout, onEdit }) => {
-  const diff = weightStats.estimated - profile.initialWeight;
-  const isGain = diff >= 0;
-  const weeklyChange = parseFloat(weightStats.change) * 7;
-  const proj1m = parseFloat(weightStats.estimated) + (weeklyChange * 4);
-  const proj2m = parseFloat(weightStats.estimated) + (weeklyChange * 8);
-  const proj3m = parseFloat(weightStats.estimated) + (weeklyChange * 12);
-
-  return (
-    <div className="pt-8 space-y-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">{profile.name}</h2>
-        <button onClick={onEdit} className="p-2 bg-gray-800 rounded-full hover:bg-gray-700 text-gray-400"><Edit2 size={18} /></button>
-      </div>
-      <div className="bg-gradient-to-br from-gray-800 to-gray-800/50 p-6 rounded-3xl border border-gray-700">
-        <div className="flex justify-between items-start mb-6">
-           <div>
-             <p className="text-sm text-gray-400 uppercase font-bold tracking-wider">Peso Estimado</p>
-             <h3 className="text-4xl font-bold text-white mt-1">{weightStats.estimated} <span className="text-lg text-gray-500">kg</span></h3>
-           </div>
-           <div className={`px-3 py-1 rounded-full text-xs font-bold ${isGain ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
-             {isGain ? '+' : ''}{diff.toFixed(2)} kg Total
-           </div>
-        </div>
-        <div className="grid grid-cols-3 gap-2 border-t border-gray-700 pt-4">
-           <div className="text-center">
-             <p className="text-[10px] text-gray-500 uppercase">Inicial</p>
-             <p className="font-bold">{profile.initialWeight}</p>
-           </div>
-           <div className="text-center border-l border-gray-700">
-             <p className="text-[10px] text-gray-500 uppercase">Meta Kcal</p>
-             <p className="font-bold">{profile.targetCalories}</p>
-           </div>
-           <div className="text-center border-l border-gray-700">
-             <p className="text-[10px] text-gray-500 uppercase">TDEE</p>
-             <p className="font-bold text-gray-400">{profile.maintenanceCalories}</p>
-           </div>
-        </div>
-      </div>
-      <div className="bg-gray-800 p-6 rounded-2xl">
-        <h3 className="flex items-center gap-2 font-bold mb-4 text-gray-300"><TrendingUp size={18} className="text-green-500" /> Proyección de Peso</h3>
-        <p className="text-xs text-gray-500 mb-6">Basado en tu balance calórico promedio reciente.</p>
-        <div className="space-y-4">
-           <ProjectionRow label="1 Mes" value={proj1m} />
-           <ProjectionRow label="2 Meses" value={proj2m} />
-           <ProjectionRow label="3 Meses" value={proj3m} />
-           <div className="mt-4 pt-4 border-t border-gray-700">
-              <p className="text-xs text-center text-gray-500">Tendencia semanal: <span className={weeklyChange > 0 ? "text-blue-400" : "text-green-400"}>{weeklyChange > 0 ? '+' : ''}{weeklyChange.toFixed(2)} kg</span></p>
-           </div>
-        </div>
-      </div>
-      <button onClick={onLogout} className="w-full py-4 text-red-400 hover:text-red-300 flex items-center justify-center gap-2"><LogOut size={18} /> Cambiar de Perfil</button>
-    </div>
-  );
-};
-
-const ProjectionRow = ({ label, value }) => (
-  <div className="flex justify-between items-center">
-    <span className="text-gray-400">{label}</span>
-    <span className="font-bold text-xl text-white">{value.toFixed(1)} <span className="text-sm text-gray-500 font-normal">kg</span></span>
-  </div>
-);
-
-// --- FOOD SELECTOR & CREATOR ---
-
-const FoodSelector = ({ foods, onAddFoodToDb, onLogFood, profileId, shareFoods }) => {
-  const [mode, setMode] = useState('search'); 
-  const [search, setSearch] = useState('');
-  const [selectedFood, setSelectedFood] = useState(null);
-  const [grams, setGrams] = useState('');
-
-  // Form create
-  const [newName, setNewName] = useState('');
-  const [newCals, setNewCals] = useState('');
-  const [newProt, setNewProt] = useState('');
-  const [newEmoji, setNewEmoji] = useState(''); 
-
-  const filteredFoods = useMemo(() => {
-    return foods.filter(f => {
-      const isOwner = f.createdBy === profileId;
-      if (!shareFoods && !isOwner) return false;
-      return f.name.toLowerCase().includes(search.toLowerCase());
-    });
-  }, [foods, search, profileId, shareFoods]);
-
-  const handleSaveFood = () => {
-    if (!newName || !newCals) return;
-    onAddFoodToDb({
-      name: newName,
-      calories: parseInt(newCals),
-      protein: parseInt(newProt) || 0,
-      emoji: newEmoji
-    });
-    setMode('search');
-    setSearch(newName); 
-  };
-
-  if (mode === 'create') {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-1 space-y-4 overflow-y-auto">
-          <div className="flex gap-2 mb-6">
-            <button onClick={() => setMode('search')} className="p-2 text-gray-400"><ChevronLeft /></button>
-            <h4 className="text-lg font-bold pt-1">Crear Nuevo Alimento</h4>
-          </div>
-          <div className="flex justify-center mb-6">
-             <input type="text" className="bg-transparent text-6xl text-center w-full outline-none placeholder-gray-700" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={2} placeholder="?" />
-             <p className="text-xs text-gray-500 absolute mt-16">Toca para elegir emoji (opcional)</p>
-          </div>
-          <Input label="Nombre" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Ej: Pechuga de Pollo" />
-          <div className="grid grid-cols-2 gap-4">
-             <Input label="Kcal / 100g" type="number" value={newCals} onChange={e => setNewCals(e.target.value)} placeholder="0" />
-             <Input label="Proteína / 100g" type="number" value={newProt} onChange={e => setNewProt(e.target.value)} placeholder="0" />
-          </div>
-        </div>
-        <Button onClick={handleSaveFood} fullWidth className="mt-4">Guardar Alimento</Button>
-      </div>
-    );
-  }
-
-  if (selectedFood) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex gap-2 mb-6 items-center">
-            <button onClick={() => setSelectedFood(null)} className="p-2 text-gray-400 bg-gray-800 rounded-full"><ChevronLeft /></button>
-            <span className="text-4xl">{selectedFood.emoji}</span>
-            <div>
-               <h4 className="text-xl font-bold">{selectedFood.name}</h4>
-               <p className="text-xs text-gray-400">{selectedFood.calories} kcal / {selectedFood.protein}g prot por 100g</p>
             </div>
-        </div>
-        <div className="flex-1 flex flex-col justify-center">
-           <div className="text-center mb-8">
-             <label className="text-green-500 font-bold uppercase tracking-widest text-sm mb-4 block">¿Cuántos gramos?</label>
-             <div className="flex items-baseline justify-center gap-2">
-               <input type="number" autoFocus className="bg-transparent text-7xl font-bold text-white text-center w-48 outline-none border-b-2 border-gray-700 focus:border-green-500 transition-colors pb-2" value={grams} onChange={(e) => setGrams(e.target.value)} placeholder="0" />
-               <span className="text-xl text-gray-500 font-medium">g</span>
-             </div>
-           </div>
-           {grams && (
-             <div className="bg-gray-800 p-4 rounded-xl text-center animate-fade-in mb-4">
-                <p className="text-gray-400 text-sm">Total a registrar:</p>
-                <p className="text-2xl font-bold text-white">{Math.round(selectedFood.calories * (grams/100))} kcal <span className="text-gray-600">|</span> {Math.round(selectedFood.protein * (grams/100))}g prot</p>
-             </div>
-           )}
-        </div>
-        <Button onClick={() => onLogFood(selectedFood, grams)} fullWidth disabled={!grams}>AGREGAR AL REGISTRO</Button>
-      </div>
-    )
-  }
+        );
 
-  return (
-    <div className="flex flex-col h-full">
-      <div className="relative mb-4">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
-        <input type="text" placeholder="Buscar alimento..." className="w-full bg-gray-800 pl-12 pr-4 py-4 rounded-xl text-white outline-none focus:ring-2 focus:ring-green-500/50" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
-      </div>
-      <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-        <button onClick={() => setMode('create')} className="w-full p-4 border border-dashed border-gray-700 rounded-xl text-gray-400 flex items-center justify-center gap-2 hover:text-white hover:border-gray-500 transition-colors">
-          <Plus size={16} /> Crear "{search || 'nuevo'}"
-        </button>
-        {filteredFoods.map(food => (
-          <button key={food.id} onClick={() => setSelectedFood(food)} className="w-full bg-gray-800 p-4 rounded-xl flex items-center justify-between hover:bg-gray-750 active:bg-gray-700 transition-colors text-left">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{food.emoji}</span>
-              <div>
-                <p className="font-bold text-white">{food.name}</p>
-                <p className="text-xs text-gray-500">{food.calories} kcal • {food.protein}g prot</p>
-              </div>
+        const AnimatedRing = ({ progress, value, label, color, size = 120, subLabel }) => {
+            const strokeWidth = 8;
+            const radius = (size - strokeWidth) / 2;
+            const circumference = radius * 2 * Math.PI;
+            const offset = circumference - (Math.min(progress, 1) * circumference);
+            return (
+                <div className="flex flex-col items-center justify-center relative" style={{ width: size, height: size }}>
+                    <svg width={size} height={size} className="transform -rotate-90">
+                        <circle stroke="#374151" strokeWidth={strokeWidth} fill="transparent" r={radius} cx={size / 2} cy={size / 2} />
+                        <circle
+                            stroke={color}
+                            strokeWidth={strokeWidth}
+                            strokeDasharray={`${circumference} ${circumference}`}
+                            style={{ strokeDashoffset: offset, transition: 'stroke-dashoffset 1s ease-in-out, stroke 0.5s ease' }}
+                            strokeLinecap="round"
+                            fill="transparent"
+                            r={radius}
+                            cx={size / 2}
+                            cy={size / 2}
+                        />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                        <span className="text-xl font-bold text-white">{value}</span>
+                        <span className="text-[10px] uppercase tracking-wide text-gray-400">{label}</span>
+                        {subLabel && <span className="text-[10px] text-gray-500 mt-1">{subLabel}</span>}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- APP PRINCIPAL ---
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [authError, setAuthError] = useState(null);
+            const [firestoreError, setFirestoreError] = useState(null);
+            const [profiles, setProfiles] = useState([]);
+            const [currentProfile, setCurrentProfile] = useState(null);
+            const [view, setView] = useState('loading'); 
+            const [activeTab, setActiveTab] = useState('home');
+            const [isEditingProfile, setIsEditingProfile] = useState(false);
+            
+            // Datos
+            const [logs, setLogs] = useState([]);
+            const [foods, setFoods] = useState([]);
+            const [currentDate, setCurrentDate] = useState(formatDate(new Date()));
+            const [isToastVisible, setIsToastVisible] = useState(false);
+            const [toastMessage, setToastMessage] = useState('');
+
+            // UI
+            const [showAddFood, setShowAddFood] = useState(false);
+
+            // --- AUTH & INIT ---
+            useEffect(() => {
+                const initAuth = async () => {
+                    if (auth.currentUser) {
+                        setUser(auth.currentUser);
+                        return;
+                    }
+                    try {
+                        await signInAnonymously(auth);
+                    } catch (error) {
+                        console.error("Error en autenticación:", error);
+                        setAuthError(error);
+                    }
+                };
+                initAuth();
+                return onAuthStateChanged(auth, (u) => { if (u) setUser(u); });
+            }, []);
+
+            // --- CARGAR PERFILES ---
+            useEffect(() => {
+                if (!user) return;
+                const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'));
+                
+                const unsub = onSnapshot(q, (snapshot) => {
+                    const p = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setProfiles(p);
+                    if (p.length === 0) setView('create-profile');
+                    else if (!currentProfile && view !== 'app' && view !== 'create-profile') setView('profiles');
+                    setFirestoreError(null);
+                }, (error) => {
+                    console.error("Error Firestore (Perfiles):", error.code, error.message);
+                    setFirestoreError(error);
+                });
+
+                return () => unsub();
+            }, [user]);
+
+            // --- CARGAR DATOS ---
+            useEffect(() => {
+                if (!user || !currentProfile) return;
+
+                const qLogs = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs'));
+                const unsubLogs = onSnapshot(qLogs, (snapshot) => {
+                    const l = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setLogs(l);
+                }, (error) => {
+                    console.error("Error Firestore (Logs):", error);
+                    if (!firestoreError) setFirestoreError(error);
+                });
+
+                const qFoods = query(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'));
+                const unsubFoods = onSnapshot(qFoods, (snapshot) => {
+                    const f = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setFoods(f);
+                });
+
+                return () => { unsubLogs(); unsubFoods(); };
+            }, [user, currentProfile]);
+
+            useEffect(() => {
+                if (profiles.length === 1 && view === 'profiles' && !currentProfile) {
+                    setCurrentProfile(profiles[0]);
+                    setView('app');
+                }
+            }, [profiles, view, currentProfile]);
+
+            // --- HELPERS LÓGICOS ---
+            const showToast = (msg) => {
+                setToastMessage(msg);
+                setIsToastVisible(true);
+                setTimeout(() => setIsToastVisible(false), 2000);
+            };
+
+            const getDayData = (date) => logs.find(l => l.date === date) || { date, entries: [] };
+
+            const getDayTotals = (date) => {
+                const dayData = getDayData(date);
+                if (!dayData || !dayData.entries) return { cals: 0, prot: 0 };
+                return dayData.entries.reduce((acc, curr) => ({
+                    cals: acc.cals + curr.calories,
+                    prot: acc.prot + curr.protein
+                }), { cals: 0, prot: 0 });
+            };
+
+            const getGoalType = (profile) => {
+                if (!profile) return 'maint';
+                if (profile.targetCalories < profile.maintenanceCalories) return 'deficit';
+                if (profile.targetCalories > profile.maintenanceCalories) return 'surplus';
+                return 'maint';
+            };
+
+            const getDayStatus = (totals, profile) => {
+                const goalType = getGoalType(profile);
+                const { targetCalories, targetProtein } = profile;
+                const proteinPass = totals.prot >= targetProtein;
+                let caloriesPass = false;
+                if (goalType === 'deficit') {
+                    caloriesPass = totals.cals <= targetCalories;
+                } else {
+                    const min = targetCalories * 0.9;
+                    const max = targetCalories * 1.1;
+                    caloriesPass = totals.cals >= min && totals.cals <= max;
+                }
+                return { passed: proteinPass && caloriesPass, proteinPass, caloriesPass };
+            };
+
+            const getCircleColor = (current, target, isDeficit) => {
+                const pct = current / target;
+                if (isDeficit) {
+                    if (pct > 1) return '#ef4444'; 
+                    if (pct >= 0.8) return '#22c55e'; 
+                    return '#f97316'; 
+                } else {
+                    if (pct < 0.8) return '#f97316'; 
+                    if (pct > 1.1) return '#ef4444'; 
+                    return '#22c55e'; 
+                }
+            };
+
+            const getProteinColor = (current, target) => {
+                const pct = current / target;
+                if (pct >= 1) return '#22c55e';
+                if (pct >= 0.8) return '#f97316';
+                return '#ef4444';
+            };
+
+            const calculateWeightEstimation = () => {
+                if (!currentProfile) return { estimated: 0, change: 0 };
+                let totalCalsDiff = 0;
+                const sortedLogs = [...logs].sort((a,b) => new Date(a.date) - new Date(b.date));
+                sortedLogs.forEach(log => {
+                    const dayTotals = log.entries.reduce((acc, curr) => acc + curr.calories, 0);
+                    totalCalsDiff += (dayTotals - currentProfile.maintenanceCalories);
+                });
+                const weightChangeKg = totalCalsDiff / CALS_PER_KG;
+                const currentEstimated = parseFloat(currentProfile.initialWeight) + weightChangeKg;
+                return {
+                    estimated: currentEstimated.toFixed(2),
+                    change: weightChangeKg.toFixed(2)
+                };
+            };
+
+            // --- ACTIONS ---
+            const handleSaveProfile = async (data) => {
+                if (!user) return;
+                try {
+                    if (isEditingProfile && currentProfile) {
+                        const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id);
+                        await updateDoc(profileRef, data);
+                        setCurrentProfile({ ...currentProfile, ...data });
+                        setView('app');
+                        setIsEditingProfile(false);
+                        showToast('Perfil actualizado');
+                    } else {
+                        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'), {
+                            ...data,
+                            createdAt: serverTimestamp()
+                        });
+                        setIsEditingProfile(false);
+                        setView('profiles');
+                    }
+                } catch (e) {
+                    console.error("Error guardando perfil:", e);
+                    showToast('Error al guardar');
+                }
+            };
+
+            const handleAddFood = async (foodData) => {
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'), {
+                        ...foodData,
+                        createdBy: currentProfile.id
+                    });
+                    showToast('Alimento guardado');
+                } catch (e) { console.error(e); }
+            };
+
+            const handleLogFood = async (food, grams) => {
+                const factor = grams / 100;
+                const entry = {
+                    foodId: food.id,
+                    name: food.name,
+                    emoji: food.emoji || '',
+                    calories: Math.round(food.calories * factor),
+                    protein: Math.round(food.protein * factor),
+                    grams: parseInt(grams),
+                    timestamp: Date.now()
+                };
+
+                const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
+                const dayDoc = logs.find(l => l.date === currentDate);
+                
+                try {
+                    if (dayDoc) {
+                        await updateDoc(dayRef, { entries: [...dayDoc.entries, entry] });
+                    } else {
+                        await setDoc(dayRef, { date: currentDate, entries: [entry] });
+                    }
+                    showToast(`${entry.emoji} ${entry.name} agregado`);
+                    setShowAddFood(false);
+                } catch (e) { console.error(e); }
+            };
+
+            const handleDeleteEntry = async (entryIndex) => {
+                const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
+                const dayDoc = logs.find(l => l.date === currentDate);
+                if (!dayDoc) return;
+                const newEntries = dayDoc.entries.filter((_, idx) => idx !== entryIndex);
+                try {
+                    await updateDoc(dayRef, { entries: newEntries });
+                } catch(e) { console.error(e); }
+            };
+
+            // --- PANTALLAS PRINCIPALES ---
+
+            // Pantalla de Error Auth
+            if (authError) return (
+                <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gray-900">
+                    <div className="bg-red-500/10 p-6 rounded-2xl border border-red-500/50 max-w-md w-full">
+                        <AlertTriangle size={48} className="text-red-500 mx-auto mb-4" />
+                        <h2 className="text-red-500 text-xl font-bold mb-2">Error de Autenticación</h2>
+                        <button onClick={() => window.location.reload()} className="mt-4 w-full py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600 transition-colors">Reintentar</button>
+                    </div>
+                </div>
+            );
+
+            // Pantalla de Error Firestore
+            if (firestoreError) {
+                const isPermissionError = firestoreError.code === 'permission-denied' || firestoreError.message?.includes('permission');
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gray-900">
+                        <div className={`p-6 rounded-2xl border max-w-md w-full ${isPermissionError ? 'bg-purple-500/10 border-purple-500/50' : 'bg-orange-500/10 border-orange-500/50'}`}>
+                            {isPermissionError ? <ShieldAlert size={48} className="text-purple-500 mx-auto mb-4" /> : <Database size={48} className="text-orange-500 mx-auto mb-4" />}
+                            <h2 className={`${isPermissionError ? 'text-purple-500' : 'text-orange-500'} text-xl font-bold mb-2`}>
+                                {isPermissionError ? 'Reglas Bloqueadas' : 'Base de Datos no disponible'}
+                            </h2>
+                            <button onClick={() => window.location.reload()} className={`mt-2 w-full py-3 text-white font-bold rounded-xl transition-colors ${isPermissionError ? 'bg-purple-600 hover:bg-purple-700' : 'bg-orange-500 hover:bg-orange-600'}`}>Reintentar</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Pantalla Loading
+            if (view === 'loading') return (
+                <div className="min-h-screen flex items-center justify-center bg-gray-900 text-green-500 font-bold animate-pulse">CONECTANDO...</div>
+            );
+
+            // Pantalla Crear/Editar Perfil
+            if (view === 'create-profile') return (
+                <CreateProfile 
+                    initialData={isEditingProfile ? currentProfile : null}
+                    onSave={handleSaveProfile} 
+                    onCancel={() => {
+                        setIsEditingProfile(false);
+                        if (profiles.length > 0) setView(isEditingProfile ? 'app' : 'profiles');
+                    }} 
+                />
+            );
+            
+            // Pantalla Selección de Perfiles
+            if (view === 'profiles') return (
+                <div className="min-h-screen p-6 flex flex-col justify-center bg-gray-900">
+                    <h1 className="text-3xl font-bold text-white mb-8 text-center">¿Quién eres?</h1>
+                    <div className="space-y-4">
+                        {profiles.map(p => (
+                            <button 
+                                key={p.id}
+                                onClick={() => { setCurrentProfile(p); setView('app'); }}
+                                className="w-full bg-gray-800 p-6 rounded-2xl flex items-center gap-4 hover:bg-gray-700 transition-all border border-gray-700"
+                            >
+                                <div className="w-12 h-12 rounded-full bg-green-500/20 text-green-500 flex items-center justify-center font-bold text-xl">{p.name.charAt(0).toUpperCase()}</div>
+                                <div className="text-left">
+                                    <h3 className="text-xl font-bold text-white">{p.name}</h3>
+                                    <p className="text-sm text-gray-400">{getGoalType(p) === 'deficit' ? 'Perder peso' : getGoalType(p) === 'surplus' ? 'Ganar masa' : 'Mantenimiento'}</p>
+                                </div>
+                            </button>
+                        ))}
+                        <button 
+                            onClick={() => { setIsEditingProfile(false); setView('create-profile'); }}
+                            className="w-full p-4 rounded-xl border-2 border-dashed border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 flex items-center justify-center gap-2 mt-8"
+                        >
+                            <Plus size={20} /> Nuevo Perfil
+                        </button>
+                    </div>
+                </div>
+            );
+
+            // APP PRINCIPAL (Tablero)
+            return (
+                <div className="min-h-screen bg-gray-900 text-gray-100 font-sans pb-24 relative overflow-hidden">
+                    {/* HEADER */}
+                    {activeTab === 'home' && (
+                        <header className="px-6 pt-12 pb-4 flex justify-between items-center sticky top-0 z-10" style={{ background: 'linear-gradient(to bottom, #111827 80%, transparent)' }}>
+                            <div>
+                                <button onClick={() => setView('profiles')} className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors">
+                                    <span className="text-xs font-bold bg-gray-800 px-2 py-1 rounded-lg border border-gray-700">{currentProfile.name}</span>
+                                </button>
+                                <h2 className="text-2xl font-bold mt-1 text-white">{getRelativeDateLabel(currentDate)}</h2>
+                            </div>
+                            <div className="flex gap-2">
+                                <button 
+                                    onClick={() => { const d = new Date(currentDate); d.setDate(d.getDate() - 1); setCurrentDate(formatDate(d)); }}
+                                    className="p-2 bg-gray-800 rounded-full hover:bg-gray-700 active:scale-95 transition-transform"
+                                >
+                                    <ChevronLeft size={20} />
+                                </button>
+                                <button 
+                                    onClick={() => setCurrentDate(formatDate(new Date()))}
+                                    className={`p-2 bg-gray-800 rounded-full hover:bg-gray-700 active:scale-95 transition-transform ${currentDate === formatDate(new Date()) ? 'opacity-50 cursor-default' : ''}`}
+                                >
+                                    <CalendarIcon size={20} />
+                                </button>
+                            </div>
+                        </header>
+                    )}
+
+                    {/* VISTAS */}
+                    <main className="px-6 animate-fade-in">
+                        {activeTab === 'home' && (
+                            <HomeView 
+                                profile={currentProfile} 
+                                totals={getDayTotals(currentDate)}
+                                dayStatus={getDayStatus(getDayTotals(currentDate), currentProfile)}
+                                entries={getDayData(currentDate).entries || []}
+                                goalType={getGoalType(currentProfile)}
+                                onAddFood={() => setShowAddFood(true)}
+                                onDeleteEntry={handleDeleteEntry}
+                                getCircleColor={getCircleColor}
+                                getProteinColor={getProteinColor}
+                            />
+                        )}
+                        {activeTab === 'history' && (
+                            <HistoryView 
+                                logs={logs} 
+                                profile={currentProfile} 
+                                getDayTotals={getDayTotals}
+                                getDayStatus={getDayStatus}
+                                onDateSelect={(d) => { setCurrentDate(d); setActiveTab('home'); }}
+                            />
+                        )}
+                        {activeTab === 'profile' && (
+                            <ProfileStatsView 
+                                profile={currentProfile} 
+                                weightStats={calculateWeightEstimation()}
+                                onLogout={() => setView('profiles')}
+                                onEdit={() => { setIsEditingProfile(true); setView('create-profile'); }} 
+                            />
+                        )}
+                    </main>
+
+                    {/* BARRA NAVEGACIÓN */}
+                    <nav className="fixed bottom-0 left-0 right-0 p-2 pb-6 z-40 border-t border-gray-800" style={{ backgroundColor: 'rgba(17, 24, 39, 0.95)', backdropFilter: 'blur(10px)' }}>
+                        <div className="flex justify-around items-center max-w-md mx-auto">
+                            <NavBtn icon={<HomeIcon size={24} />} active={activeTab === 'home'} onClick={() => setActiveTab('home')} label="Home" />
+                            <NavBtn icon={<CalendarIcon size={24} />} active={activeTab === 'history'} onClick={() => setActiveTab('history')} label="Historial" />
+                            <NavBtn icon={<User size={24} />} active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} label="Perfil" />
+                        </div>
+                    </nav>
+
+                    {/* MODAL AGREGAR ALIMENTO */}
+                    {showAddFood && (
+                        <div className="fixed inset-0 z-50 flex flex-col justify-end animate-fade-in" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                            <div className="bg-gray-900 rounded-t-3xl p-6 h-[85vh] overflow-hidden flex flex-col relative border-t border-gray-800 shadow-2xl">
+                                <button onClick={() => setShowAddFood(false)} className="absolute top-4 right-4 p-2 bg-gray-800 rounded-full text-gray-400"><X size={20} /></button>
+                                <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                                    <span className="bg-green-500/20 text-green-500 p-2 rounded-lg"><Plus size={18} /></span>
+                                    Agregar Alimento
+                                </h3>
+                                <FoodSelector 
+                                    foods={foods} 
+                                    onAddFoodToDb={handleAddFood}
+                                    onLogFood={handleLogFood}
+                                    profileId={currentProfile.id}
+                                    shareFoods={currentProfile.shareFoods}
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* TOAST NOTIFICACIÓN */}
+                    {isToastVisible && (
+                        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full shadow-xl border border-green-500/30 flex items-center gap-2 animate-bounce-in z-50">
+                            <Check size={16} className="text-green-500" />
+                            <span className="text-sm font-medium">{toastMessage}</span>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // --- SUBCOMPONENTES DE VISTA ---
+
+        const HomeView = ({ profile, totals, dayStatus, entries, goalType, onAddFood, onDeleteEntry, getCircleColor, getProteinColor }) => {
+            const isDeficit = goalType === 'deficit';
+            return (
+                <div className="space-y-8 pb-10">
+                    <div className="flex justify-center items-center gap-4 mt-4">
+                        <AnimatedRing 
+                            value={totals.cals} 
+                            label="Kcal" 
+                            subLabel={`Meta: ${profile.targetCalories}`}
+                            progress={totals.cals / profile.targetCalories}
+                            color={getCircleColor(totals.cals, profile.targetCalories, isDeficit)}
+                            size={140}
+                        />
+                        <AnimatedRing 
+                            value={totals.prot} 
+                            label="Prot (g)" 
+                            subLabel={`Meta: ${profile.targetProtein}`}
+                            progress={totals.prot / profile.targetProtein}
+                            color={getProteinColor(totals.prot, profile.targetProtein)}
+                            size={140}
+                        />
+                    </div>
+                    <div className="flex justify-center mt-4 mb-4">
+                        <div className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm font-bold border transition-colors ${
+                            dayStatus.passed ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-gray-800 border-gray-700 text-gray-400'
+                        }`}>
+                            {dayStatus.passed ? <Check size={16} /> : <div className="w-4 h-4 rounded-full border-2 border-current opacity-50" />}
+                            {dayStatus.passed ? 'Objetivo Cumplido' : 'En progreso'}
+                        </div>
+                    </div>
+                    <div className="grid place-items-center mb-6">
+                        <button onClick={onAddFood} className="w-16 h-16 bg-gradient-to-tr from-green-500 to-emerald-400 rounded-full shadow-[0_0_20px_rgba(34,197,94,0.4)] flex items-center justify-center text-black transition-transform hover:scale-105 active:scale-95" style={{ background: 'linear-gradient(to top right, #22c55e, #34d399)' }}>
+                            <Plus size={32} />
+                        </button>
+                        <span className="text-xs text-gray-500 mt-3 font-medium tracking-wide">AGREGAR ALIMENTO</span>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="flex justify-between items-end border-b border-gray-800 pb-2">
+                            <h3 className="text-lg font-bold text-white">Consumido hoy</h3>
+                        </div>
+                        {entries.length === 0 ? (
+                            <div className="text-center py-10 text-gray-600 italic">No hay alimentos registrados hoy</div>
+                        ) : (
+                            <div className="space-y-3">
+                                {entries.map((entry, idx) => (
+                                    <div key={idx} className="bg-gray-800 p-4 rounded-xl flex items-center justify-between group border border-gray-800 hover:border-gray-700 transition-colors">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-2xl">{entry.emoji || '🍽️'}</span>
+                                            <div>
+                                                <p className="font-semibold text-white">{entry.name}</p>
+                                                <p className="text-xs text-gray-400 flex gap-2">
+                                                    <span>{entry.grams}g</span><span className="text-gray-600">•</span><span className="text-green-400">{entry.calories} kcal</span><span className="text-gray-600">•</span><span className="text-blue-400">{entry.protein}g prot</span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => onDeleteEntry(idx)} className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const HistoryView = ({ logs, profile, getDayTotals, getDayStatus, onDateSelect }) => {
+            const today = new Date();
+            const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+            const days = Array.from({ length: daysInMonth }, (_, i) => {
+                const d = new Date(today.getFullYear(), today.getMonth(), i + 1);
+                return formatDate(d);
+            });
+
+            return (
+                <div className="pt-8">
+                    <h2 className="text-2xl font-bold mb-6">Historial</h2>
+                    <div className="bg-gray-800 p-6 rounded-2xl mb-6">
+                        <h3 className="text-sm uppercase tracking-wider text-gray-400 mb-4 font-bold">Este Mes</h3>
+                        <div className="grid grid-cols-7 gap-2">
+                            {days.map(dateStr => {
+                                const totals = getDayTotals(dateStr);
+                                const status = getDayStatus(totals, profile);
+                                const hasData = totals.cals > 0;
+                                const isToday = dateStr === formatDate(new Date());
+                                let bgClass = "bg-gray-900 text-gray-600";
+                                let style = {};
+                                if (hasData) {
+                                    bgClass = status.passed ? "bg-green-500 text-black font-bold shadow-[0_0_10px_rgba(34,197,94,0.3)]" : "bg-red-500/20 text-red-500 border border-red-500/30";
+                                }
+                                if (isToday) {
+                                    style.border = '2px solid white';
+                                }
+                                return (
+                                    <button key={dateStr} onClick={() => onDateSelect(dateStr)} className={`aspect-square rounded-lg flex flex-col items-center justify-center text-xs transition-all hover:scale-110 ${bgClass}`} style={style}>
+                                        <span>{parseInt(dateStr.split('-')[2])}</span>
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-gray-800 p-5 rounded-2xl">
+                            <p className="text-gray-400 text-xs uppercase font-bold">Días Cumplidos</p>
+                            <p className="text-3xl font-bold text-green-500 mt-2">{logs.filter(l => getDayStatus(getDayTotals(l.date), profile).passed).length}</p>
+                        </div>
+                        <div className="bg-gray-800 p-5 rounded-2xl">
+                            <p className="text-gray-400 text-xs uppercase font-bold">Promedio Kcal</p>
+                            <p className="text-3xl font-bold text-white mt-2">{logs.length > 0 ? Math.round(logs.reduce((acc, curr) => acc + getDayTotals(curr.date).cals, 0) / logs.length) : 0}</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const ProfileStatsView = ({ profile, weightStats, onLogout, onEdit }) => {
+            const diff = weightStats.estimated - profile.initialWeight;
+            const isGain = diff >= 0;
+            const weeklyChange = parseFloat(weightStats.change) * 7;
+            const proj1m = parseFloat(weightStats.estimated) + (weeklyChange * 4);
+            const proj2m = parseFloat(weightStats.estimated) + (weeklyChange * 8);
+            const proj3m = parseFloat(weightStats.estimated) + (weeklyChange * 12);
+
+            return (
+                <div className="pt-8 space-y-6">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-2xl font-bold">{profile.name}</h2>
+                        <button onClick={onEdit} className="p-2 bg-gray-800 rounded-full hover:bg-gray-700 text-gray-400"><Edit2 size={18} /></button>
+                    </div>
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-800/50 p-6 rounded-3xl border border-gray-700">
+                        <div className="flex justify-between items-start mb-6">
+                            <div>
+                                <p className="text-sm text-gray-400 uppercase font-bold tracking-wider">Peso Estimado</p>
+                                <h3 className="text-4xl font-bold text-white mt-1">{weightStats.estimated} <span className="text-lg text-gray-500">kg</span></h3>
+                            </div>
+                            <div className={`px-3 py-1 rounded-full text-xs font-bold ${isGain ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                                {isGain ? '+' : ''}{diff.toFixed(2)} kg Total
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 border-t border-gray-700 pt-4">
+                            <div className="text-center">
+                                <p className="text-[10px] text-gray-500 uppercase">Inicial</p>
+                                <p className="font-bold">{profile.initialWeight}</p>
+                            </div>
+                            <div className="text-center border-l border-gray-700">
+                                <p className="text-[10px] text-gray-500 uppercase">Meta Kcal</p>
+                                <p className="font-bold">{profile.targetCalories}</p>
+                            </div>
+                            <div className="text-center border-l border-gray-700">
+                                <p className="text-[10px] text-gray-500 uppercase">TDEE</p>
+                                <p className="font-bold text-gray-400">{profile.maintenanceCalories}</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="bg-gray-800 p-6 rounded-2xl">
+                        <h3 className="flex items-center gap-2 font-bold mb-4 text-gray-300"><TrendingUp size={18} className="text-green-500" /> Proyección de Peso</h3>
+                        <p className="text-xs text-gray-500 mb-6">Basado en tu balance calórico promedio reciente.</p>
+                        <div className="space-y-4">
+                            <ProjectionRow label="1 Mes" value={proj1m} />
+                            <ProjectionRow label="2 Meses" value={proj2m} />
+                            <ProjectionRow label="3 Meses" value={proj3m} />
+                            <div className="mt-4 pt-4 border-t border-gray-700">
+                                <p className="text-xs text-center text-gray-500">Tendencia semanal: <span className={weeklyChange > 0 ? "text-blue-400" : "text-green-400"}>{weeklyChange > 0 ? '+' : ''}{weeklyChange.toFixed(2)} kg</span></p>
+                            </div>
+                        </div>
+                    </div>
+                    <button onClick={onLogout} className="w-full py-4 text-red-400 hover:text-red-300 flex items-center justify-center gap-2"><LogOut size={18} /> Cambiar de Perfil</button>
+                </div>
+            );
+        };
+
+        const ProjectionRow = ({ label, value }) => (
+            <div className="flex justify-between items-center">
+                <span className="text-gray-400">{label}</span>
+                <span className="font-bold text-xl text-white">{value.toFixed(1)} <span className="text-sm text-gray-500 font-normal">kg</span></span>
             </div>
-            <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-green-500"><Plus size={16} /></div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-};
+        );
 
-// --- CREAR PERFIL FORM ---
+        const FoodSelector = ({ foods, onAddFoodToDb, onLogFood, profileId, shareFoods }) => {
+            const [mode, setMode] = useState('search'); 
+            const [search, setSearch] = useState('');
+            const [selectedFood, setSelectedFood] = useState(null);
+            const [grams, setGrams] = useState('');
 
-const CreateProfile = ({ initialData, onSave, onCancel }) => {
-  const [formData, setFormData] = useState({
-    name: '', height: '', initialWeight: '', maintenanceCalories: '', targetCalories: '', targetProtein: '', shareFoods: true
-  });
+            // Form create
+            const [newName, setNewName] = useState('');
+            const [newCals, setNewCals] = useState('');
+            const [newProt, setNewProt] = useState('');
+            const [newEmoji, setNewEmoji] = useState(''); 
 
-  useEffect(() => {
-    if (initialData) setFormData(initialData);
-  }, [initialData]);
+            const filteredFoods = useMemo(() => {
+                return foods.filter(f => {
+                    const isOwner = f.createdBy === profileId;
+                    if (!shareFoods && !isOwner) return false;
+                    return f.name.toLowerCase().includes(search.toLowerCase());
+                });
+            }, [foods, search, profileId, shareFoods]);
 
-  const handleChange = (f, v) => setFormData(prev => ({ ...prev, [f]: v }));
-  
-  // Auto cálculo simple (Mifflin-St Jeor)
-  useEffect(() => {
-    if (!initialData && formData.initialWeight && formData.height && !formData.maintenanceCalories) {
-         const weight = parseFloat(formData.initialWeight);
-         const height = parseFloat(formData.height);
-         if (!isNaN(weight) && !isNaN(height)) {
-             // Fórmula base simplificada (edad 30, actividad 1.2)
-             const bmr = (10 * weight) + (6.25 * height) - (5 * 30) + 5;
-             const tdee = Math.round(bmr * 1.2); 
-             setFormData(prev => ({ ...prev, maintenanceCalories: tdee.toString() }));
-         }
-    }
-  }, [formData.initialWeight, formData.height, initialData, formData.maintenanceCalories]);
+            const handleSaveFood = () => {
+                if (!newName || !newCals) return;
+                onAddFoodToDb({
+                    name: newName,
+                    calories: parseInt(newCals),
+                    protein: parseInt(newProt) || 0,
+                    emoji: newEmoji
+                });
+                setMode('search');
+                setSearch(newName); 
+            };
 
-  return (
-    <div className="min-h-screen bg-gray-900 p-6 flex flex-col">
-      <h1 className="text-3xl font-bold text-white mb-2">{initialData ? 'Editar Perfil' : 'Nuevo Perfil'}</h1>
-      <p className="text-gray-400 mb-8">{initialData ? 'Actualiza tus datos.' : 'Configura tus objetivos.'}</p>
-      <div className="flex-1 space-y-4 overflow-y-auto pb-4">
-        <Input label="Nombre" value={formData.name} onChange={e => handleChange('name', e.target.value)} placeholder="Ej: Juan" />
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Altura (cm)" type="number" value={formData.height} onChange={e => handleChange('height', e.target.value)} placeholder="175" />
-          <Input label="Peso Inicial (kg)" type="number" value={formData.initialWeight} onChange={e => handleChange('initialWeight', e.target.value)} placeholder="75.5" />
-        </div>
-        <div className="p-4 bg-gray-800 rounded-xl border border-gray-700 my-4">
-           <h3 className="text-white font-bold mb-4 flex items-center gap-2"><Settings size={16} /> Objetivos Calóricos</h3>
-           <Input label="Calorías de Mantenimiento" type="number" value={formData.maintenanceCalories} onChange={e => handleChange('maintenanceCalories', e.target.value)} placeholder="Ej: 2000" />
-           <Input label="Objetivo Diario Calorías" type="number" value={formData.targetCalories} onChange={e => handleChange('targetCalories', e.target.value)} placeholder="Ej: 1800 (Déficit)" />
-           <div className="mt-2 text-xs text-center">
-             {formData.maintenanceCalories && formData.targetCalories && (
-               <span className={`font-bold px-2 py-1 rounded ${
-                 parseInt(formData.targetCalories) < parseInt(formData.maintenanceCalories) ? 'text-green-500 bg-green-500/10' :
-                 parseInt(formData.targetCalories) > parseInt(formData.maintenanceCalories) ? 'text-blue-500 bg-blue-500/10' :
-                 'text-gray-400 bg-gray-700'
-               }`}>
-                 {parseInt(formData.targetCalories) < parseInt(formData.maintenanceCalories) ? 'MODO DÉFICIT' :
-                  parseInt(formData.targetCalories) > parseInt(formData.maintenanceCalories) ? 'MODO SUPERÁVIT' :
-                  'MANTENIMIENTO'}
-               </span>
-             )}
-           </div>
-        </div>
-        <Input label="Objetivo Proteína (g)" type="number" value={formData.targetProtein} onChange={e => handleChange('targetProtein', e.target.value)} placeholder="Ej: 140" />
-        <div className="flex items-center gap-3 p-4 bg-gray-800 rounded-xl">
-           <input type="checkbox" checked={formData.shareFoods} onChange={e => handleChange('shareFoods', e.target.checked)} className="w-5 h-5 rounded accent-green-500" />
-           <div className="text-sm">
-             <p className="text-white font-medium">Ver alimentos de otros</p>
-             <p className="text-gray-500 text-xs">Permite buscar alimentos creados en otros perfiles.</p>
-           </div>
-        </div>
-      </div>
-      <div className="flex gap-4 pt-4">
-        {onCancel && <Button variant="secondary" onClick={onCancel} className="flex-1">Cancelar</Button>}
-        <Button onClick={() => onSave(formData)} className="flex-1">{initialData ? 'Actualizar' : 'Crear Perfil'}</Button>
-      </div>
-    </div>
-  );
-};
+            if (mode === 'create') {
+                return (
+                    <div className="flex flex-col h-full">
+                        <div className="flex-1 space-y-4 overflow-y-auto">
+                            <div className="flex gap-2 mb-6">
+                                <button onClick={() => setMode('search')} className="p-2 text-gray-400"><ChevronLeft /></button>
+                                <h4 className="text-lg font-bold pt-1">Crear Nuevo Alimento</h4>
+                            </div>
+                            <div className="flex justify-center mb-6">
+                                <input type="text" className="bg-transparent text-6xl text-center w-full outline-none placeholder-gray-700" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={2} placeholder="?" />
+                                <p className="text-xs text-gray-500 absolute mt-16">Toca para elegir emoji (opcional)</p>
+                            </div>
+                            <Input label="Nombre" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Ej: Pechuga de Pollo" />
+                            <div className="grid grid-cols-2 gap-4">
+                                <Input label="Kcal / 100g" type="number" value={newCals} onChange={e => setNewCals(e.target.value)} placeholder="0" />
+                                <Input label="Proteína / 100g" type="number" value={newProt} onChange={e => setNewProt(e.target.value)} placeholder="0" />
+                            </div>
+                        </div>
+                        <Button onClick={handleSaveFood} fullWidth className="mt-4">Guardar Alimento</Button>
+                    </div>
+                );
+            }
 
-const NavBtn = ({ icon, active, onClick, label }) => (
-  <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all duration-300 ${active ? 'text-green-500 -translate-y-2' : 'text-gray-500'}`}>
-    <div className={`p-2 rounded-xl transition-all ${active ? 'bg-green-500/10 shadow-[0_0_10px_rgba(34,197,94,0.2)]' : 'bg-transparent'}`}>{icon}</div>
-    <span className={`text-[10px] font-medium transition-opacity ${active ? 'opacity-100' : 'opacity-0'}`}>{label}</span>
-  </button>
-);
+            if (selectedFood) {
+                return (
+                    <div className="flex flex-col h-full">
+                        <div className="flex gap-2 mb-6 items-center">
+                            <button onClick={() => setSelectedFood(null)} className="p-2 text-gray-400 bg-gray-800 rounded-full"><ChevronLeft /></button>
+                            <span className="text-4xl">{selectedFood.emoji}</span>
+                            <div>
+                                <h4 className="text-xl font-bold">{selectedFood.name}</h4>
+                                <p className="text-xs text-gray-400">{selectedFood.calories} kcal / {selectedFood.protein}g prot por 100g</p>
+                            </div>
+                        </div>
+                        <div className="flex-1 flex flex-col justify-center">
+                            <div className="text-center mb-8">
+                                <label className="text-green-500 font-bold uppercase tracking-widest text-sm mb-4 block">¿Cuántos gramos?</label>
+                                <div className="flex items-baseline justify-center gap-2">
+                                    <input type="number" autoFocus className="bg-transparent text-7xl font-bold text-white text-center w-48 outline-none border-b-2 border-gray-700 focus:border-green-500 transition-colors pb-2" value={grams} onChange={(e) => setGrams(e.target.value)} placeholder="0" />
+                                    <span className="text-xl text-gray-500 font-medium">g</span>
+                                </div>
+                            </div>
+                            {grams && (
+                                <div className="bg-gray-800 p-4 rounded-xl text-center animate-fade-in mb-4">
+                                    <p className="text-gray-400 text-sm">Total a registrar:</p>
+                                    <p className="text-2xl font-bold text-white">{Math.round(selectedFood.calories * (grams/100))} kcal <span className="text-gray-600">|</span> {Math.round(selectedFood.protein * (grams/100))}g prot</p>
+                                </div>
+                            )}
+                        </div>
+                        <Button onClick={() => onLogFood(selectedFood, grams)} fullWidth disabled={!grams}>AGREGAR AL REGISTRO</Button>
+                    </div>
+                )
+            }
+
+            return (
+                <div className="flex flex-col h-full">
+                    <div className="relative mb-4">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
+                        <input type="text" placeholder="Buscar alimento..." className="w-full bg-gray-800 pl-12 pr-4 py-4 rounded-xl text-white outline-none focus:ring-2 focus:ring-green-500/50" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                        <button onClick={() => setMode('create')} className="w-full p-4 border border-dashed border-gray-700 rounded-xl text-gray-400 flex items-center justify-center gap-2 hover:text-white hover:border-gray-500 transition-colors">
+                            <Plus size={16} /> Crear "{search || 'nuevo'}"
+                        </button>
+                        {filteredFoods.map(food => (
+                            <button key={food.id} onClick={() => setSelectedFood(food)} className="w-full bg-gray-800 p-4 rounded-xl flex items-center justify-between hover:bg-gray-750 active:bg-gray-700 transition-colors text-left">
+                                <div className="flex items-center gap-3">
+                                    <span className="text-2xl">{food.emoji}</span>
+                                    <div>
+                                        <p className="font-bold text-white">{food.name}</p>
+                                        <p className="text-xs text-gray-500">{food.calories} kcal • {food.protein}g prot</p>
+                                    </div>
+                                </div>
+                                <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-green-500"><Plus size={16} /></div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const CreateProfile = ({ initialData, onSave, onCancel }) => {
+            const [formData, setFormData] = useState({
+                name: '', height: '', initialWeight: '', maintenanceCalories: '', targetCalories: '', targetProtein: '', shareFoods: true
+            });
+
+            useEffect(() => {
+                if (initialData) setFormData(initialData);
+            }, [initialData]);
+
+            const handleChange = (f, v) => setFormData(prev => ({ ...prev, [f]: v }));
+            
+            // Auto cálculo simple (Mifflin-St Jeor)
+            useEffect(() => {
+                if (!initialData && formData.initialWeight && formData.height && !formData.maintenanceCalories) {
+                    const weight = parseFloat(formData.initialWeight);
+                    const height = parseFloat(formData.height);
+                    if (!isNaN(weight) && !isNaN(height)) {
+                        // Fórmula base simplificada (edad 30, actividad 1.2)
+                        const bmr = (10 * weight) + (6.25 * height) - (5 * 30) + 5;
+                        const tdee = Math.round(bmr * 1.2); 
+                        setFormData(prev => ({ ...prev, maintenanceCalories: tdee.toString() }));
+                    }
+                }
+            }, [formData.initialWeight, formData.height, initialData, formData.maintenanceCalories]);
+
+            return (
+                <div className="min-h-screen bg-gray-900 p-6 flex flex-col">
+                    <h1 className="text-3xl font-bold text-white mb-2">{initialData ? 'Editar Perfil' : 'Nuevo Perfil'}</h1>
+                    <p className="text-gray-400 mb-8">{initialData ? 'Actualiza tus datos.' : 'Configura tus objetivos.'}</p>
+                    <div className="flex-1 space-y-4 overflow-y-auto pb-4">
+                        <Input label="Nombre" value={formData.name} onChange={e => handleChange('name', e.target.value)} placeholder="Ej: Juan" />
+                        <div className="grid grid-cols-2 gap-4">
+                            <Input label="Altura (cm)" type="number" value={formData.height} onChange={e => handleChange('height', e.target.value)} placeholder="175" />
+                            <Input label="Peso Inicial (kg)" type="number" value={formData.initialWeight} onChange={e => handleChange('initialWeight', e.target.value)} placeholder="75.5" />
+                        </div>
+                        <div className="p-4 bg-gray-800 rounded-xl border border-gray-700 my-4">
+                            <h3 className="text-white font-bold mb-4 flex items-center gap-2"><Settings size={16} /> Objetivos Calóricos</h3>
+                            <Input label="Calorías de Mantenimiento" type="number" value={formData.maintenanceCalories} onChange={e => handleChange('maintenanceCalories', e.target.value)} placeholder="Ej: 2000" />
+                            <Input label="Objetivo Diario Calorías" type="number" value={formData.targetCalories} onChange={e => handleChange('targetCalories', e.target.value)} placeholder="Ej: 1800 (Déficit)" />
+                            <div className="mt-2 text-xs text-center">
+                                {formData.maintenanceCalories && formData.targetCalories && (
+                                <span className={`font-bold px-2 py-1 rounded ${
+                                    parseInt(formData.targetCalories) < parseInt(formData.maintenanceCalories) ? 'text-green-500 bg-green-500/10' :
+                                    parseInt(formData.targetCalories) > parseInt(formData.maintenanceCalories) ? 'text-blue-500 bg-blue-500/10' :
+                                    'text-gray-400 bg-gray-700'
+                                }`} style={{ color: parseInt(formData.targetCalories) < parseInt(formData.maintenanceCalories) ? '#22c55e' : parseInt(formData.targetCalories) > parseInt(formData.maintenanceCalories) ? '#60a5fa' : '#9ca3af' }}>
+                                    {parseInt(formData.targetCalories) < parseInt(formData.maintenanceCalories) ? 'MODO DÉFICIT' :
+                                    parseInt(formData.targetCalories) > parseInt(formData.maintenanceCalories) ? 'MODO SUPERÁVIT' :
+                                    'MANTENIMIENTO'}
+                                </span>
+                                )}
+                            </div>
+                        </div>
+                        <Input label="Objetivo Proteína (g)" type="number" value={formData.targetProtein} onChange={e => handleChange('targetProtein', e.target.value)} placeholder="Ej: 140" />
+                        <div className="flex items-center gap-3 p-4 bg-gray-800 rounded-xl">
+                            <input type="checkbox" checked={formData.shareFoods} onChange={e => handleChange('shareFoods', e.target.checked)} className="w-5 h-5 rounded accent-green-500" />
+                            <div className="text-sm">
+                                <p className="text-white font-medium">Ver alimentos de otros</p>
+                                <p className="text-gray-500 text-xs">Permite buscar alimentos creados en otros perfiles.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex gap-4 pt-4">
+                        {onCancel && <Button variant="secondary" onClick={onCancel} className="flex-1">Cancelar</Button>}
+                        <Button onClick={() => onSave(formData)} className="flex-1">{initialData ? 'Actualizar' : 'Crear Perfil'}</Button>
+                    </div>
+                </div>
+            );
+        };
+
+        const NavBtn = ({ icon, active, onClick, label }) => (
+            <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all duration-300 ${active ? 'text-green-500 -translate-y-2' : 'text-gray-500'}`}>
+                <div className={`p-2 rounded-xl transition-all ${active ? 'bg-green-500/10 shadow-[0_0_10px_rgba(34,197,94,0.2)]' : 'bg-transparent'}`}>{icon}</div>
+                <span className={`text-[10px] font-medium transition-opacity ${active ? 'opacity-100' : 'opacity-0'}`}>{label}</span>
+            </button>
+        );
+
+        // --- RENDER ---
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
