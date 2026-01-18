@@ -101,6 +101,29 @@
             return d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
         };
 
+        const playBeep = () => {
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                
+                const audioCtx = new AudioContext();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+
+                oscillator.type = "square";
+                oscillator.frequency.setValueAtTime(1200, audioCtx.currentTime); // Frecuencia del beep
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); // Volumen
+
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.1); // Duración corta
+            } catch (e) {
+                console.error("Audio beep failed", e);
+            }
+        };
+
         // --- COMPONENTES UI BASE ---
 
         const Button = ({ children, onClick, variant = 'primary', className = '', fullWidth = false, disabled = false }) => {
@@ -1155,6 +1178,7 @@
             // Estado para el escáner
             const [showScanner, setShowScanner] = useState(false);
             const [scannerError, setScannerError] = useState(null);
+            const scannerRef = useRef(null);
 
             // Form create/edit
             const [editingId, setEditingId] = useState(null);
@@ -1175,19 +1199,50 @@
             useEffect(() => {
                 if (!showScanner) return;
 
+                // Ensure the element exists before creating instance
+                if (!document.getElementById("reader")) return;
+
                 const html5QrCode = new Html5Qrcode("reader");
+                scannerRef.current = html5QrCode;
                 
                 const startScanner = async () => {
                     try {
+                        const formatsToSupport = [
+                            Html5QrcodeSupportedFormats.UPC_A,
+                            Html5QrcodeSupportedFormats.UPC_E,
+                            Html5QrcodeSupportedFormats.EAN_13,
+                            Html5QrcodeSupportedFormats.EAN_8,
+                            Html5QrcodeSupportedFormats.CODE_128,
+                            Html5QrcodeSupportedFormats.CODE_39
+                        ];
+
+                        const config = { 
+                            fps: 10, 
+                            qrbox: { width: 250, height: 250 },
+                            formatsToSupport: formatsToSupport,
+                            experimentalFeatures: {
+                                useBarCodeDetectorIfSupported: true
+                            }
+                        };
+
                         await html5QrCode.start(
                             { facingMode: "environment" }, 
-                            { fps: 10, qrbox: { width: 250, height: 250 } },
+                            config,
                             (decodedText) => {
-                                // Success
-                                html5QrCode.stop().then(() => {
+                                playBeep();
+                                // Chain the stop and clear operations
+                                if (scannerRef.current && scannerRef.current.isScanning) {
+                                    scannerRef.current.stop()
+                                        .then(() => {
+                                            try { scannerRef.current.clear(); } catch(e) {}
+                                            setShowScanner(false);
+                                            handleScanSuccess(decodedText);
+                                        })
+                                        .catch(err => console.error("Stop failed", err));
+                                } else {
                                     setShowScanner(false);
                                     handleScanSuccess(decodedText);
-                                }).catch(err => console.error("Stop failed", err));
+                                }
                             },
                             (errorMessage) => {
                                 // Running error, ignore
@@ -1196,19 +1251,35 @@
                         setScannerError(null);
                     } catch (err) {
                         console.error("Error starting scanner", err);
-                        setScannerError("No se pudo acceder a la cámara. Verifica los permisos del sitio (candado en la barra de dirección).");
+                        setScannerError("No se pudo acceder a la cámara. Verifica los permisos del sitio.");
                     }
                 };
 
                 startScanner();
 
                 return () => {
-                    if (html5QrCode.isScanning) {
-                        html5QrCode.stop().catch(err => console.error("Cleanup stop failed", err));
+                    if (scannerRef.current) {
+                        if (scannerRef.current.isScanning) {
+                            scannerRef.current.stop()
+                                .then(() => {
+                                    try { scannerRef.current.clear(); } catch(e) { console.warn(e); }
+                                })
+                                .catch(err => console.error("Cleanup stop failed", err));
+                        } else {
+                            try {
+                                scannerRef.current.clear();
+                            } catch (e) {
+                                // ignore clear errors if not scanning
+                            }
+                        }
                     }
-                    html5QrCode.clear();
                 };
             }, [showScanner]);
+
+            const handleStopScanner = async () => {
+                // Just hide scanner, let useEffect cleanup handle the logic
+                setShowScanner(false);
+            };
 
             const handleScanSuccess = async (decodedText) => {
                 try {
@@ -1296,14 +1367,14 @@
             if (showScanner) {
                 return (
                     <div className="flex flex-col h-full bg-black relative">
-                        <button onClick={() => setShowScanner(false)} className="absolute top-4 right-4 z-50 p-2 bg-gray-800 rounded-full text-white"><X /></button>
+                        <button onClick={handleStopScanner} className="absolute top-4 right-4 z-50 p-2 bg-gray-800 rounded-full text-white"><X /></button>
                         <h4 className="text-center text-white font-bold py-4">Escanea el Código de Barras</h4>
                         <div id="reader" className="w-full flex-1 bg-black"></div>
                         {scannerError && (
                             <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-red-500/90 text-white p-6 rounded-xl text-center max-w-xs">
                                 <AlertCircle className="mx-auto mb-2" size={32} />
                                 <p className="mb-4">{scannerError}</p>
-                                <button onClick={() => setShowScanner(false)} className="bg-white text-red-500 px-4 py-2 rounded-lg font-bold">Cerrar</button>
+                                <button onClick={handleStopScanner} className="bg-white text-red-500 px-4 py-2 rounded-lg font-bold">Cerrar</button>
                             </div>
                         )}
                         <p className="text-center text-gray-400 p-4 text-xs">Apunta la cámara al código de barras del producto.</p>
