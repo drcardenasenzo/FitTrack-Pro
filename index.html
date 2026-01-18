@@ -58,7 +58,7 @@
         // Importamos TODOS los iconos usados en tu código original
         import { 
             Plus, Trash2, Edit2, ChevronLeft, ChevronRight, User, TrendingUp, Calendar as CalendarIcon, 
-            Home as HomeIcon, Search, Check, X, Settings, LogOut, AlertTriangle, Database, ShieldAlert, Zap, ScanBarcode 
+            Home as HomeIcon, Search, Check, X, Settings, LogOut, AlertTriangle, Database, ShieldAlert, Zap, ScanBarcode, Undo2, AlertCircle, Camera 
         } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
 
         // --- CONFIGURACIÓN FIREBASE (Tu configuración original) ---
@@ -216,6 +216,11 @@
                         if (view !== 'loading') setView('app');
                         return;
                     }
+
+                    if (view === 'trash') {
+                        setView('profiles');
+                        return;
+                    }
                 };
 
                 window.addEventListener('popstate', handlePopState);
@@ -243,6 +248,11 @@
                 setEditingEntry({ ...entry, index });
             };
 
+            const openTrash = () => {
+                window.history.pushState({ modal: 'trash' }, '', '#trash');
+                setView('trash');
+            }
+
             // --- AUTH & INIT ---
             useEffect(() => {
                 const initAuth = async () => {
@@ -264,14 +274,13 @@
             // --- CARGAR PERFILES (PÚBLICOS) ---
             useEffect(() => {
                 if (!user) return;
-                // CAMBIO: Usamos 'public/data/profiles' para compartir perfiles entre todos
                 const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'profiles'));
                 
                 const unsub = onSnapshot(q, (snapshot) => {
                     const p = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                     setProfiles(p);
-                    if (p.length === 0) setView('create-profile');
-                    else if (!currentProfile && view !== 'app' && view !== 'create-profile') setView('profiles');
+                    if (p.length === 0 && view !== 'trash' && view !== 'create-profile') setView('create-profile');
+                    else if (!currentProfile && view !== 'app' && view !== 'create-profile' && view !== 'trash') setView('profiles');
                     setFirestoreError(null);
                 }, (error) => {
                     console.error("Error Firestore (Perfiles):", error.code, error.message);
@@ -285,7 +294,6 @@
             useEffect(() => {
                 if (!user || !currentProfile) return;
 
-                // CAMBIO: Logs en ruta pública bajo el perfil
                 const qLogs = query(collection(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs'));
                 const unsubLogs = onSnapshot(qLogs, (snapshot) => {
                     const l = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -295,7 +303,6 @@
                     if (!firestoreError) setFirestoreError(error);
                 });
 
-                // CAMBIO: Alimentos en ruta pública compartida
                 const qFoods = query(collection(db, 'artifacts', appId, 'public', 'data', 'foods'));
                 const unsubFoods = onSnapshot(qFoods, (snapshot) => {
                     const f = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -305,12 +312,16 @@
                 return () => { unsubLogs(); unsubFoods(); };
             }, [user, currentProfile]);
 
+            // --- FILTRADO DE PERFILES ---
+            const activeProfiles = useMemo(() => profiles.filter(p => !p.isDeleted), [profiles]);
+            const deletedProfiles = useMemo(() => profiles.filter(p => p.isDeleted), [profiles]);
+
             useEffect(() => {
-                if (profiles.length === 1 && view === 'profiles' && !currentProfile) {
-                    setCurrentProfile(profiles[0]);
+                if (activeProfiles.length === 1 && view === 'profiles' && !currentProfile) {
+                    setCurrentProfile(activeProfiles[0]);
                     setView('app');
                 }
-            }, [profiles, view, currentProfile]);
+            }, [activeProfiles, view, currentProfile]);
 
             // --- HELPERS LÓGICOS ---
             const showToast = (msg) => {
@@ -398,17 +409,16 @@
                 if (!user) return;
                 try {
                     if (isEditingProfile && currentProfile) {
-                        // CAMBIO: Ruta pública
                         const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id);
                         await updateDoc(profileRef, data);
                         setCurrentProfile({ ...currentProfile, ...data });
                         window.history.back(); 
                         showToast('Perfil actualizado');
                     } else {
-                        // CAMBIO: Ruta pública
                         await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'profiles'), {
                             ...data,
-                            createdAt: serverTimestamp()
+                            createdAt: serverTimestamp(),
+                            isDeleted: false 
                         });
                         setIsEditingProfile(false);
                         setView('profiles');
@@ -419,9 +429,54 @@
                 }
             };
 
+            const handleSoftDeleteProfile = async () => {
+                if (!currentProfile) return;
+                try {
+                    const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id);
+                    await updateDoc(profileRef, {
+                        isDeleted: true,
+                        deletedAt: Date.now()
+                    });
+                    
+                    setIsEditingProfile(false);
+                    setCurrentProfile(null);
+                    window.history.back(); 
+                    setView('profiles'); 
+                    showToast('Perfil movido a la papelera');
+                } catch (e) {
+                    console.error("Error eliminando perfil:", e);
+                    showToast('Error al eliminar');
+                }
+            };
+
+            const handleRestoreProfile = async (profileId) => {
+                try {
+                    const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', profileId);
+                    await updateDoc(profileRef, {
+                        isDeleted: false,
+                        deletedAt: null
+                    });
+                    showToast('Perfil restaurado');
+                } catch(e) {
+                    console.error("Error restaurando:", e);
+                    showToast('Error al restaurar');
+                }
+            };
+
+            const handlePermanentDeleteProfile = async (profileId) => {
+                if(!window.confirm("¿Estás seguro? Esta acción es irreversible.")) return;
+                try {
+                    const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', profileId);
+                    await deleteDoc(profileRef);
+                    showToast('Perfil eliminado permanentemente');
+                } catch(e) {
+                    console.error("Error hard delete:", e);
+                    showToast('Error al eliminar');
+                }
+            };
+
             const handleAddFood = async (foodData) => {
                 try {
-                    // CAMBIO: Ruta pública compartida
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'foods'), {
                         ...foodData,
                         createdBy: currentProfile.id
@@ -432,7 +487,6 @@
 
             const handleEditFood = async (foodId, updatedData) => {
                 try {
-                    // CAMBIO: Ruta pública compartida
                     const foodRef = doc(db, 'artifacts', appId, 'public', 'data', 'foods', foodId);
                     await updateDoc(foodRef, updatedData);
                     showToast('Alimento actualizado');
@@ -441,7 +495,6 @@
 
             const handleDeleteFood = async (foodId) => {
                 try {
-                    // CAMBIO: Ruta pública compartida
                     const foodRef = doc(db, 'artifacts', appId, 'public', 'data', 'foods', foodId);
                     await deleteDoc(foodRef);
                     showToast('Alimento eliminado');
@@ -476,7 +529,6 @@
             };
 
             const saveLogEntry = async (entry) => {
-                // CAMBIO: Ruta pública bajo el perfil
                 const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
                 const dayDoc = logs.find(l => l.date === currentDate);
                 try {
@@ -491,7 +543,6 @@
             };
 
             const handleUpdateLogEntry = async (index, updatedEntry) => {
-                // CAMBIO: Ruta pública bajo el perfil
                 const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
                 const dayDoc = logs.find(l => l.date === currentDate);
                 if (!dayDoc) return;
@@ -507,7 +558,6 @@
             };
 
             const handleDeleteEntry = async (entryIndex) => {
-                // CAMBIO: Ruta pública bajo el perfil
                 const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
                 const dayDoc = logs.find(l => l.date === currentDate);
                 if (!dayDoc) return;
@@ -519,7 +569,6 @@
 
             // --- PANTALLAS PRINCIPALES ---
 
-            // Pantalla de Error Auth
             if (authError) return (
                 <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gray-900">
                     <div className="bg-red-500/10 p-6 rounded-2xl border border-red-500/50 max-w-md w-full">
@@ -530,7 +579,6 @@
                 </div>
             );
 
-            // Pantalla de Error Firestore
             if (firestoreError) {
                 const isPermissionError = firestoreError.code === 'permission-denied' || firestoreError.message?.includes('permission');
                 return (
@@ -546,33 +594,31 @@
                 );
             }
 
-            // Pantalla Loading
             if (view === 'loading') return (
                 <div className="min-h-screen flex items-center justify-center bg-gray-900 text-green-500 font-bold animate-pulse">CONECTANDO...</div>
             );
 
-            // Pantalla Crear/Editar Perfil
             if (view === 'create-profile') return (
                 <CreateProfile 
                     initialData={isEditingProfile ? currentProfile : null}
                     onSave={handleSaveProfile} 
+                    onDelete={handleSoftDeleteProfile} 
                     onCancel={() => {
                         if (isEditingProfile) {
                             window.history.back();
                         } else {
                             setIsEditingProfile(false);
-                            if (profiles.length > 0) setView('profiles');
+                            if (activeProfiles.length > 0) setView('profiles');
                         }
                     }} 
                 />
             );
             
-            // Pantalla Selección de Perfiles
             if (view === 'profiles') return (
                 <div className="min-h-screen p-6 flex flex-col justify-center bg-gray-900">
                     <h1 className="text-3xl font-bold text-white mb-8 text-center">¿Quién eres?</h1>
                     <div className="space-y-4">
-                        {profiles.map(p => (
+                        {activeProfiles.map(p => (
                             <button 
                                 key={p.id}
                                 onClick={() => { setCurrentProfile(p); setView('app'); }}
@@ -591,6 +637,54 @@
                         >
                             <Plus size={20} /> Nuevo Perfil
                         </button>
+                        
+                        {deletedProfiles.length > 0 && (
+                            <button 
+                                onClick={openTrash}
+                                className="w-full p-4 text-gray-500 hover:text-gray-300 flex items-center justify-center gap-2 mt-4 text-sm"
+                            >
+                                <Trash2 size={16} /> Papelera ({deletedProfiles.length})
+                            </button>
+                        )}
+                    </div>
+                </div>
+            );
+
+            if (view === 'trash') return (
+                <div className="min-h-screen bg-gray-900 p-6 flex flex-col">
+                    <div className="flex items-center gap-2 mb-6">
+                        <button onClick={closeWindow} className="p-2 text-gray-400"><ChevronLeft /></button>
+                        <h1 className="text-2xl font-bold text-white">Papelera</h1>
+                    </div>
+                    <div className="flex-1 space-y-4">
+                        {deletedProfiles.map(p => {
+                            const daysDeleted = Math.floor((Date.now() - p.deletedAt) / (1000 * 60 * 60 * 24));
+                            const daysRemaining = 60 - daysDeleted;
+                            const isExpired = daysRemaining < 0;
+
+                            return (
+                                <div key={p.id} className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                                    <div className="flex justify-between items-start mb-2">
+                                        <h3 className="text-lg font-bold text-white">{p.name}</h3>
+                                        <span className={`text-xs px-2 py-1 rounded ${isExpired ? 'bg-red-500/20 text-red-500' : 'bg-yellow-500/20 text-yellow-500'}`}>
+                                            {isExpired ? 'Expirado' : `${daysRemaining} días para restaurar`}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mb-4">Eliminado el {new Date(p.deletedAt).toLocaleDateString()}</p>
+                                    <div className="flex gap-2">
+                                        {!isExpired && (
+                                            <button onClick={() => handleRestoreProfile(p.id)} className="flex-1 bg-blue-500/10 text-blue-500 py-2 rounded-lg text-sm font-bold hover:bg-blue-500/20 flex items-center justify-center gap-2">
+                                                <Undo2 size={16} /> Restaurar
+                                            </button>
+                                        )}
+                                        <button onClick={() => handlePermanentDeleteProfile(p.id)} className="flex-1 bg-red-500/10 text-red-500 py-2 rounded-lg text-sm font-bold hover:bg-red-500/20 flex items-center justify-center gap-2">
+                                            <X size={16} /> Eliminar Definitivamente
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        {deletedProfiles.length === 0 && <p className="text-gray-500 text-center mt-10">La papelera está vacía.</p>}
                     </div>
                 </div>
             );
@@ -1079,63 +1173,71 @@
 
             // Efecto para el escáner
             useEffect(() => {
-                let html5QrcodeScanner;
-                if (showScanner) {
-                    const onScanSuccess = async (decodedText, decodedResult) => {
-                        // Detener escáner
-                        try {
-                            await html5QrcodeScanner.clear();
-                        } catch (e) { console.error("Error clearing scanner", e); }
-                        
-                        setShowScanner(false);
+                if (!showScanner) return;
 
-                        // Consultar OpenFoodFacts
-                        try {
-                            const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${decodedText}.json`);
-                            const data = await response.json();
-                            
-                            if (data.status === 1) {
-                                // Producto encontrado
-                                const product = data.product;
-                                setEditingId(null);
-                                setNewName(product.product_name || 'Producto Escaneado');
-                                // Intentar obtener kcal
-                                const kcal = product.nutriments['energy-kcal_100g'] || product.nutriments['energy-kcal'];
-                                setNewCals(kcal ? Math.round(kcal) : '');
-                                // Intentar obtener proteínas
-                                const prot = product.nutriments.proteins_100g || product.nutriments.proteins;
-                                setNewProt(prot ? parseFloat(prot).toFixed(1) : '');
-                                setNewEmoji('📦'); // Emoji por defecto para escaneados
-                                setMode('create');
-                            } else {
-                                alert('Producto no encontrado en OpenFoodFacts. Puedes crearlo manualmente.');
-                                setMode('create');
+                const html5QrCode = new Html5Qrcode("reader");
+                
+                const startScanner = async () => {
+                    try {
+                        await html5QrCode.start(
+                            { facingMode: "environment" }, 
+                            { fps: 10, qrbox: { width: 250, height: 250 } },
+                            (decodedText) => {
+                                // Success
+                                html5QrCode.stop().then(() => {
+                                    setShowScanner(false);
+                                    handleScanSuccess(decodedText);
+                                }).catch(err => console.error("Stop failed", err));
+                            },
+                            (errorMessage) => {
+                                // Running error, ignore
                             }
-                        } catch (error) {
-                            console.error("Error fetching product", error);
-                            alert('Error al consultar el producto. Intenta manualmente.');
-                            setMode('create');
-                        }
-                    };
-
-                    const onScanFailure = (error) => {
-                        // No hacer nada, es ruido normal mientras escanea
-                    };
-
-                    html5QrcodeScanner = new Html5QrcodeScanner(
-                        "reader",
-                        { fps: 10, qrbox: { width: 250, height: 250 } },
-                        /* verbose= */ false
-                    );
-                    html5QrcodeScanner.render(onScanSuccess, onScanFailure);
-                }
-
-                return () => {
-                    if (html5QrcodeScanner) {
-                        html5QrcodeScanner.clear().catch(e => console.error(e));
+                        );
+                        setScannerError(null);
+                    } catch (err) {
+                        console.error("Error starting scanner", err);
+                        setScannerError("No se pudo acceder a la cámara. Verifica los permisos del sitio (candado en la barra de dirección).");
                     }
                 };
+
+                startScanner();
+
+                return () => {
+                    if (html5QrCode.isScanning) {
+                        html5QrCode.stop().catch(err => console.error("Cleanup stop failed", err));
+                    }
+                    html5QrCode.clear();
+                };
             }, [showScanner]);
+
+            const handleScanSuccess = async (decodedText) => {
+                try {
+                    const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${decodedText}.json`);
+                    const data = await response.json();
+                    
+                    if (data.status === 1) {
+                        // Producto encontrado
+                        const product = data.product;
+                        setEditingId(null);
+                        setNewName(product.product_name || 'Producto Escaneado');
+                        // Intentar obtener kcal
+                        const kcal = product.nutriments['energy-kcal_100g'] || product.nutriments['energy-kcal'];
+                        setNewCals(kcal ? Math.round(kcal) : '');
+                        // Intentar obtener proteínas
+                        const prot = product.nutriments.proteins_100g || product.nutriments.proteins;
+                        setNewProt(prot ? parseFloat(prot).toFixed(1) : '');
+                        setNewEmoji('📦'); // Emoji por defecto para escaneados
+                        setMode('create');
+                    } else {
+                        alert('Producto no encontrado en OpenFoodFacts. Puedes crearlo manualmente.');
+                        setMode('create');
+                    }
+                } catch (error) {
+                    console.error("Error fetching product", error);
+                    alert('Error al consultar el producto. Intenta manualmente.');
+                    setMode('create');
+                }
+            };
 
             const startCreate = () => {
                 setEditingId(null);
@@ -1197,6 +1299,13 @@
                         <button onClick={() => setShowScanner(false)} className="absolute top-4 right-4 z-50 p-2 bg-gray-800 rounded-full text-white"><X /></button>
                         <h4 className="text-center text-white font-bold py-4">Escanea el Código de Barras</h4>
                         <div id="reader" className="w-full flex-1 bg-black"></div>
+                        {scannerError && (
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-red-500/90 text-white p-6 rounded-xl text-center max-w-xs">
+                                <AlertCircle className="mx-auto mb-2" size={32} />
+                                <p className="mb-4">{scannerError}</p>
+                                <button onClick={() => setShowScanner(false)} className="bg-white text-red-500 px-4 py-2 rounded-lg font-bold">Cerrar</button>
+                            </div>
+                        )}
                         <p className="text-center text-gray-400 p-4 text-xs">Apunta la cámara al código de barras del producto.</p>
                     </div>
                 );
@@ -1336,10 +1445,11 @@
             );
         };
 
-        const CreateProfile = ({ initialData, onSave, onCancel }) => {
+        const CreateProfile = ({ initialData, onSave, onDelete, onCancel }) => {
             const [formData, setFormData] = useState({
                 name: '', height: '', initialWeight: '', maintenanceCalories: '', targetCalories: '', targetProtein: '', shareFoods: true
             });
+            const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
             useEffect(() => {
                 if (initialData) setFormData(initialData);
@@ -1362,7 +1472,7 @@
             }, [formData.initialWeight, formData.height, initialData, formData.maintenanceCalories]);
 
             return (
-                <div className="min-h-screen bg-gray-900 p-6 flex flex-col">
+                <div className="min-h-screen bg-gray-900 p-6 flex flex-col relative">
                     <h1 className="text-3xl font-bold text-white mb-2">{initialData ? 'Editar Perfil' : 'Nuevo Perfil'}</h1>
                     <p className="text-gray-400 mb-8">{initialData ? 'Actualiza tus datos.' : 'Configura tus objetivos.'}</p>
                     <div className="flex-1 space-y-4 overflow-y-auto pb-4">
@@ -1397,11 +1507,39 @@
                                 <p className="text-gray-500 text-xs">Permite buscar alimentos creados en otros perfiles.</p>
                             </div>
                         </div>
+                        
+                        {/* Botón Eliminar solo en edición */}
+                        {initialData && (
+                            <button 
+                                onClick={() => setShowDeleteConfirm(true)}
+                                className="w-full p-4 border border-red-500/30 bg-red-500/10 text-red-500 rounded-xl flex items-center justify-center gap-2 hover:bg-red-500/20 mt-8"
+                            >
+                                <Trash2 size={20} /> Eliminar Perfil
+                            </button>
+                        )}
                     </div>
+                    
                     <div className="flex gap-4 pt-4">
                         {onCancel && <Button variant="secondary" onClick={onCancel} className="flex-1">Cancelar</Button>}
                         <Button onClick={() => onSave(formData)} className="flex-1">{initialData ? 'Actualizar' : 'Crear Perfil'}</Button>
                     </div>
+
+                    {/* Modal Confirmación Eliminación */}
+                    {showDeleteConfirm && (
+                        <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50 p-6 animate-fade-in backdrop-blur-sm">
+                            <div className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm text-center">
+                                <AlertTriangle size={48} className="text-yellow-500 mx-auto mb-4" />
+                                <h3 className="text-xl font-bold text-white mb-2">¿Eliminar perfil?</h3>
+                                <p className="text-gray-400 text-sm mb-6">
+                                    El perfil se moverá a la papelera. Podrás restaurarlo durante 60 días antes de que se elimine permanentemente.
+                                </p>
+                                <div className="flex gap-3">
+                                    <Button variant="secondary" onClick={() => setShowDeleteConfirm(false)} className="flex-1">Cancelar</Button>
+                                    <Button variant="danger" onClick={onDelete} className="flex-1">Eliminar</Button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
