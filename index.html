@@ -10,6 +10,9 @@
     
     <!-- 2. Motor: Babel para traducir React en el navegador -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 3. Librería Escáner de Código de Barras -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
     <!-- Estilos base -->
     <style>
@@ -29,7 +32,7 @@
 <body>
     <div id="root"></div>
 
-    <!-- 3. Lógica de la Aplicación -->
+    <!-- 4. Lógica de la Aplicación -->
     <script type="text/babel" data-type="module">
         // --- IMPORTACIONES CDN (Adaptadas para funcionar sin instalación) ---
         import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
@@ -47,14 +50,15 @@
             setDoc, 
             addDoc, 
             updateDoc, 
+            deleteDoc,
             onSnapshot, 
             query, 
             serverTimestamp 
         } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
         // Importamos TODOS los iconos usados en tu código original
         import { 
-            Plus, Trash2, Edit2, ChevronLeft, User, TrendingUp, Calendar as CalendarIcon, 
-            Home as HomeIcon, Search, Check, X, Settings, LogOut, AlertTriangle, Database, ShieldAlert 
+            Plus, Trash2, Edit2, ChevronLeft, ChevronRight, User, TrendingUp, Calendar as CalendarIcon, 
+            Home as HomeIcon, Search, Check, X, Settings, LogOut, AlertTriangle, Database, ShieldAlert, Zap, ScanBarcode 
         } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
 
         // --- CONFIGURACIÓN FIREBASE (Tu configuración original) ---
@@ -91,7 +95,10 @@
             const yesterday = new Date();
             yesterday.setDate(yesterday.getDate() - 1);
             if (dateStr === formatDate(yesterday)) return 'Ayer';
-            return dateStr;
+            
+            // Si es otra fecha, formato legible
+            const d = new Date(dateStr + 'T00:00:00'); // T00 para evitar offset de zona horaria al parsear
+            return d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
         };
 
         // --- COMPONENTES UI BASE ---
@@ -102,7 +109,8 @@
                 primary: "bg-green-500 text-black hover:bg-green-400 shadow-[0_0_15px_rgba(34,197,94,0.3)]",
                 secondary: "bg-gray-800 text-white hover:bg-gray-700 border border-gray-700",
                 danger: "bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20",
-                ghost: "bg-transparent text-gray-400 hover:text-white"
+                ghost: "bg-transparent text-gray-400 hover:text-white",
+                warning: "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 border border-yellow-500/20"
             };
             return (
                 <button onClick={onClick} disabled={disabled} className={`${baseStyle} ${variants[variant]} ${fullWidth ? 'w-full' : ''} ${className}`}>
@@ -111,6 +119,7 @@
             );
         };
 
+        // Modificado: Añadido step="any" para permitir decimales en inputs number
         const Input = ({ label, value, onChange, type = "text", placeholder, icon }) => (
             <div className="mb-4 w-full">
                 <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider font-medium ml-1">{label}</label>
@@ -120,6 +129,7 @@
                         value={value}
                         onChange={onChange}
                         placeholder={placeholder}
+                        step={type === 'number' ? "any" : undefined}
                         className="w-full bg-gray-800 text-white p-4 rounded-xl outline-none focus:ring-2 focus:ring-green-500/50 transition-all placeholder-gray-600 border border-gray-700"
                     />
                     {icon && <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">{icon}</div>}
@@ -168,6 +178,7 @@
             const [view, setView] = useState('loading'); 
             const [activeTab, setActiveTab] = useState('home');
             const [isEditingProfile, setIsEditingProfile] = useState(false);
+            const [editingEntry, setEditingEntry] = useState(null); 
             
             // Datos
             const [logs, setLogs] = useState([]);
@@ -178,6 +189,59 @@
 
             // UI
             const [showAddFood, setShowAddFood] = useState(false);
+
+            // Refs para manejar estado en listener de 'popstate'
+            const stateRef = useRef({ showAddFood, isEditingProfile, view, editingEntry });
+            useEffect(() => {
+                stateRef.current = { showAddFood, isEditingProfile, view, editingEntry };
+            }, [showAddFood, isEditingProfile, view, editingEntry]);
+
+            // --- MANEJO DEL BOTÓN ATRÁS (Android/Navegador) ---
+            useEffect(() => {
+                const handlePopState = (event) => {
+                    const { showAddFood, isEditingProfile, view, editingEntry } = stateRef.current;
+                    
+                    if (editingEntry) {
+                        setEditingEntry(null);
+                        return;
+                    }
+
+                    if (showAddFood) {
+                        setShowAddFood(false);
+                        return;
+                    }
+
+                    if (isEditingProfile) {
+                        setIsEditingProfile(false);
+                        if (view !== 'loading') setView('app');
+                        return;
+                    }
+                };
+
+                window.addEventListener('popstate', handlePopState);
+                return () => window.removeEventListener('popstate', handlePopState);
+            }, []);
+
+            // Helper para cerrar "ventanas" (simula botón atrás)
+            const closeWindow = () => {
+                window.history.back();
+            };
+
+            const openAddFoodModal = () => {
+                window.history.pushState({ modal: 'add-food' }, '', '#add-food');
+                setShowAddFood(true);
+            };
+
+            const openEditProfile = () => {
+                window.history.pushState({ modal: 'edit-profile' }, '', '#edit-profile');
+                setIsEditingProfile(true);
+                setView('create-profile');
+            };
+
+            const openEditEntry = (entry, index) => {
+                window.history.pushState({ modal: 'edit-entry' }, '', '#edit-entry');
+                setEditingEntry({ ...entry, index });
+            };
 
             // --- AUTH & INIT ---
             useEffect(() => {
@@ -197,10 +261,11 @@
                 return onAuthStateChanged(auth, (u) => { if (u) setUser(u); });
             }, []);
 
-            // --- CARGAR PERFILES ---
+            // --- CARGAR PERFILES (PÚBLICOS) ---
             useEffect(() => {
                 if (!user) return;
-                const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'));
+                // CAMBIO: Usamos 'public/data/profiles' para compartir perfiles entre todos
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'profiles'));
                 
                 const unsub = onSnapshot(q, (snapshot) => {
                     const p = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -216,11 +281,12 @@
                 return () => unsub();
             }, [user]);
 
-            // --- CARGAR DATOS ---
+            // --- CARGAR DATOS (LOGS Y FOODS PÚBLICOS) ---
             useEffect(() => {
                 if (!user || !currentProfile) return;
 
-                const qLogs = query(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs'));
+                // CAMBIO: Logs en ruta pública bajo el perfil
+                const qLogs = query(collection(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs'));
                 const unsubLogs = onSnapshot(qLogs, (snapshot) => {
                     const l = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                     setLogs(l);
@@ -229,7 +295,8 @@
                     if (!firestoreError) setFirestoreError(error);
                 });
 
-                const qFoods = query(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'));
+                // CAMBIO: Alimentos en ruta pública compartida
+                const qFoods = query(collection(db, 'artifacts', appId, 'public', 'data', 'foods'));
                 const unsubFoods = onSnapshot(qFoods, (snapshot) => {
                     const f = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                     setFoods(f);
@@ -257,10 +324,15 @@
             const getDayTotals = (date) => {
                 const dayData = getDayData(date);
                 if (!dayData || !dayData.entries) return { cals: 0, prot: 0 };
-                return dayData.entries.reduce((acc, curr) => ({
+                const totals = dayData.entries.reduce((acc, curr) => ({
                     cals: acc.cals + curr.calories,
                     prot: acc.prot + curr.protein
                 }), { cals: 0, prot: 0 });
+                
+                return { 
+                    cals: Math.round(totals.cals), 
+                    prot: parseFloat(totals.prot.toFixed(1)) 
+                };
             };
 
             const getGoalType = (profile) => {
@@ -326,14 +398,15 @@
                 if (!user) return;
                 try {
                     if (isEditingProfile && currentProfile) {
-                        const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id);
+                        // CAMBIO: Ruta pública
+                        const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id);
                         await updateDoc(profileRef, data);
                         setCurrentProfile({ ...currentProfile, ...data });
-                        setView('app');
-                        setIsEditingProfile(false);
+                        window.history.back(); 
                         showToast('Perfil actualizado');
                     } else {
-                        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'profiles'), {
+                        // CAMBIO: Ruta pública
+                        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'profiles'), {
                             ...data,
                             createdAt: serverTimestamp()
                         });
@@ -348,12 +421,31 @@
 
             const handleAddFood = async (foodData) => {
                 try {
-                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'foods'), {
+                    // CAMBIO: Ruta pública compartida
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'foods'), {
                         ...foodData,
                         createdBy: currentProfile.id
                     });
                     showToast('Alimento guardado');
                 } catch (e) { console.error(e); }
+            };
+
+            const handleEditFood = async (foodId, updatedData) => {
+                try {
+                    // CAMBIO: Ruta pública compartida
+                    const foodRef = doc(db, 'artifacts', appId, 'public', 'data', 'foods', foodId);
+                    await updateDoc(foodRef, updatedData);
+                    showToast('Alimento actualizado');
+                } catch (e) { console.error(e); showToast('Error al editar'); }
+            };
+
+            const handleDeleteFood = async (foodId) => {
+                try {
+                    // CAMBIO: Ruta pública compartida
+                    const foodRef = doc(db, 'artifacts', appId, 'public', 'data', 'foods', foodId);
+                    await deleteDoc(foodRef);
+                    showToast('Alimento eliminado');
+                } catch (e) { console.error(e); showToast('Error al eliminar'); }
             };
 
             const handleLogFood = async (food, grams) => {
@@ -363,14 +455,30 @@
                     name: food.name,
                     emoji: food.emoji || '',
                     calories: Math.round(food.calories * factor),
-                    protein: Math.round(food.protein * factor),
+                    protein: parseFloat((food.protein * factor).toFixed(1)),
                     grams: parseInt(grams),
                     timestamp: Date.now()
                 };
+                await saveLogEntry(entry);
+            };
 
-                const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
+            const handleQuickLog = async (quickData) => {
+                const entry = {
+                    foodId: 'quick_' + Date.now(),
+                    name: quickData.name,
+                    emoji: quickData.emoji || '⚡',
+                    calories: parseInt(quickData.calories),
+                    protein: parseFloat(quickData.protein) || 0,
+                    grams: 0, 
+                    timestamp: Date.now()
+                };
+                await saveLogEntry(entry);
+            };
+
+            const saveLogEntry = async (entry) => {
+                // CAMBIO: Ruta pública bajo el perfil
+                const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
                 const dayDoc = logs.find(l => l.date === currentDate);
-                
                 try {
                     if (dayDoc) {
                         await updateDoc(dayRef, { entries: [...dayDoc.entries, entry] });
@@ -378,12 +486,29 @@
                         await setDoc(dayRef, { date: currentDate, entries: [entry] });
                     }
                     showToast(`${entry.emoji} ${entry.name} agregado`);
-                    setShowAddFood(false);
+                    window.history.back();
                 } catch (e) { console.error(e); }
             };
 
+            const handleUpdateLogEntry = async (index, updatedEntry) => {
+                // CAMBIO: Ruta pública bajo el perfil
+                const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
+                const dayDoc = logs.find(l => l.date === currentDate);
+                if (!dayDoc) return;
+                
+                const newEntries = [...dayDoc.entries];
+                newEntries[index] = updatedEntry;
+                
+                try {
+                    await updateDoc(dayRef, { entries: newEntries });
+                    showToast('Entrada actualizada');
+                    window.history.back(); 
+                } catch(e) { console.error(e); showToast('Error al actualizar'); }
+            };
+
             const handleDeleteEntry = async (entryIndex) => {
-                const dayRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profiles', currentProfile.id, 'logs', currentDate);
+                // CAMBIO: Ruta pública bajo el perfil
+                const dayRef = doc(db, 'artifacts', appId, 'public', 'data', 'profiles', currentProfile.id, 'logs', currentDate);
                 const dayDoc = logs.find(l => l.date === currentDate);
                 if (!dayDoc) return;
                 const newEntries = dayDoc.entries.filter((_, idx) => idx !== entryIndex);
@@ -432,8 +557,12 @@
                     initialData={isEditingProfile ? currentProfile : null}
                     onSave={handleSaveProfile} 
                     onCancel={() => {
-                        setIsEditingProfile(false);
-                        if (profiles.length > 0) setView(isEditingProfile ? 'app' : 'profiles');
+                        if (isEditingProfile) {
+                            window.history.back();
+                        } else {
+                            setIsEditingProfile(false);
+                            if (profiles.length > 0) setView('profiles');
+                        }
                     }} 
                 />
             );
@@ -504,8 +633,9 @@
                                 dayStatus={getDayStatus(getDayTotals(currentDate), currentProfile)}
                                 entries={getDayData(currentDate).entries || []}
                                 goalType={getGoalType(currentProfile)}
-                                onAddFood={() => setShowAddFood(true)}
+                                onAddFood={openAddFoodModal}
                                 onDeleteEntry={handleDeleteEntry}
+                                onEditEntry={openEditEntry}
                                 getCircleColor={getCircleColor}
                                 getProteinColor={getProteinColor}
                             />
@@ -524,7 +654,7 @@
                                 profile={currentProfile} 
                                 weightStats={calculateWeightEstimation()}
                                 onLogout={() => setView('profiles')}
-                                onEdit={() => { setIsEditingProfile(true); setView('create-profile'); }} 
+                                onEdit={openEditProfile} 
                             />
                         )}
                     </main>
@@ -538,11 +668,22 @@
                         </div>
                     </nav>
 
+                    {/* MODAL EDITAR ENTRADA */}
+                    {editingEntry && (
+                        <EditEntryModal 
+                            entry={editingEntry}
+                            index={editingEntry.index}
+                            foods={foods}
+                            onSave={handleUpdateLogEntry}
+                            onCancel={closeWindow}
+                        />
+                    )}
+
                     {/* MODAL AGREGAR ALIMENTO */}
                     {showAddFood && (
                         <div className="fixed inset-0 z-50 flex flex-col justify-end animate-fade-in" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
                             <div className="bg-gray-900 rounded-t-3xl p-6 h-[85vh] overflow-hidden flex flex-col relative border-t border-gray-800 shadow-2xl">
-                                <button onClick={() => setShowAddFood(false)} className="absolute top-4 right-4 p-2 bg-gray-800 rounded-full text-gray-400"><X size={20} /></button>
+                                <button onClick={closeWindow} className="absolute top-4 right-4 p-2 bg-gray-800 rounded-full text-gray-400"><X size={20} /></button>
                                 <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
                                     <span className="bg-green-500/20 text-green-500 p-2 rounded-lg"><Plus size={18} /></span>
                                     Agregar Alimento
@@ -550,7 +691,10 @@
                                 <FoodSelector 
                                     foods={foods} 
                                     onAddFoodToDb={handleAddFood}
+                                    onEditFoodInDb={handleEditFood}
+                                    onDeleteFoodInDb={handleDeleteFood}
                                     onLogFood={handleLogFood}
+                                    onQuickLog={handleQuickLog}
                                     profileId={currentProfile.id}
                                     shareFoods={currentProfile.shareFoods}
                                 />
@@ -571,7 +715,81 @@
 
         // --- SUBCOMPONENTES DE VISTA ---
 
-        const HomeView = ({ profile, totals, dayStatus, entries, goalType, onAddFood, onDeleteEntry, getCircleColor, getProteinColor }) => {
+        const EditEntryModal = ({ entry, index, foods, onSave, onCancel }) => {
+            const originalFood = foods.find(f => f.id === entry.foodId);
+            const isRegularEntry = entry.grams > 0 && originalFood;
+            
+            const [grams, setGrams] = useState(entry.grams);
+            const [name, setName] = useState(entry.name);
+            const [cals, setCals] = useState(entry.calories);
+            const [prot, setProt] = useState(entry.protein);
+
+            const handleSave = () => {
+                const { index, ...cleanEntry } = entry;
+                
+                if (isRegularEntry) {
+                    const factor = grams / 100;
+                    onSave(index, {
+                        ...cleanEntry,
+                        grams: parseInt(grams),
+                        calories: Math.round(originalFood.calories * factor),
+                        protein: parseFloat((originalFood.protein * factor).toFixed(1))
+                    });
+                } else {
+                    onSave(index, {
+                        ...cleanEntry,
+                        name,
+                        calories: parseInt(cals),
+                        protein: parseFloat(prot)
+                    });
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+                <div className="bg-gray-900 w-full max-w-sm rounded-2xl p-6 border border-gray-800 animate-bounce-in relative shadow-2xl">
+                    <button onClick={onCancel} className="absolute top-4 right-4 text-gray-400 p-2 bg-gray-800 rounded-full"><X size={20} /></button>
+                    <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                        <span className="bg-blue-500/20 text-blue-500 p-2 rounded-lg"><Edit2 size={18} /></span>
+                        Editar Entrada
+                    </h3>
+                    
+                    {isRegularEntry ? (
+                        <div className="text-center">
+                            <span className="text-6xl block mb-4">{originalFood.emoji}</span>
+                            <p className="font-bold text-white text-lg mb-6">{originalFood.name}</p>
+                            <label className="text-green-500 font-bold uppercase tracking-widest text-xs mb-2 block">Modificar Gramos</label>
+                            <div className="flex items-baseline justify-center gap-2 mb-8">
+                                <input type="number" autoFocus className="bg-transparent text-6xl font-bold text-white text-center w-40 outline-none border-b-2 border-gray-700 focus:border-green-500 transition-colors pb-2" value={grams} onChange={(e) => setGrams(e.target.value)} />
+                                <span className="text-xl text-gray-500 font-medium">g</span>
+                            </div>
+                            <div className="bg-gray-800 p-4 rounded-xl mb-6 border border-gray-700">
+                                <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Nuevos Valores</p>
+                                <p className="text-2xl font-bold text-white">
+                                    {Math.round(originalFood.calories * (grams/100))} kcal <span className="text-gray-600">|</span> {(originalFood.protein * (grams/100)).toFixed(1)}g prot
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-yellow-500 text-sm mb-4">
+                                Esta entrada no está vinculada a un alimento base. Editas los valores directamente.
+                            </div>
+                            <Input label="Nombre" value={name} onChange={e => setName(e.target.value)} />
+                            <div className="grid grid-cols-2 gap-4">
+                                <Input label="Calorías" type="number" value={cals} onChange={e => setCals(e.target.value)} />
+                                <Input label="Proteínas" type="number" value={prot} onChange={e => setProt(e.target.value)} />
+                            </div>
+                        </div>
+                    )}
+
+                    <Button onClick={handleSave} fullWidth>Guardar Cambios</Button>
+                </div>
+                </div>
+            );
+        };
+
+        const HomeView = ({ profile, totals, dayStatus, entries, goalType, onAddFood, onDeleteEntry, onEditEntry, getCircleColor, getProteinColor }) => {
             const isDeficit = goalType === 'deficit';
             return (
                 <div className="space-y-8 pb-10">
@@ -622,11 +840,21 @@
                                             <div>
                                                 <p className="font-semibold text-white">{entry.name}</p>
                                                 <p className="text-xs text-gray-400 flex gap-2">
-                                                    <span>{entry.grams}g</span><span className="text-gray-600">•</span><span className="text-green-400">{entry.calories} kcal</span><span className="text-gray-600">•</span><span className="text-blue-400">{entry.protein}g prot</span>
+                                                    {entry.grams > 0 ? (
+                                                        <><span>{entry.grams}g</span><span className="text-gray-600">•</span></>
+                                                    ) : (
+                                                        <span className="text-yellow-500 text-[10px] uppercase font-bold mr-2 border border-yellow-500/30 px-1 rounded">Manual</span>
+                                                    )}
+                                                    <span className="text-green-400">{entry.calories} kcal</span>
+                                                    <span className="text-gray-600">•</span>
+                                                    <span className="text-blue-400">{entry.protein}g prot</span>
                                                 </p>
                                             </div>
                                         </div>
-                                        <button onClick={() => onDeleteEntry(idx)} className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                        <div className="flex items-center gap-1">
+                                            <button onClick={() => onEditEntry(entry, idx)} className="p-2 text-gray-600 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"><Edit2 size={16} /></button>
+                                            <button onClick={() => onDeleteEntry(idx)} className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -637,40 +865,116 @@
         };
 
         const HistoryView = ({ logs, profile, getDayTotals, getDayStatus, onDateSelect }) => {
-            const today = new Date();
-            const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-            const days = Array.from({ length: daysInMonth }, (_, i) => {
-                const d = new Date(today.getFullYear(), today.getMonth(), i + 1);
-                return formatDate(d);
-            });
+            const [viewMode, setViewMode] = useState('month'); // 'month' | 'week'
+            const [navDate, setNavDate] = useState(new Date());
+
+            const changeTime = (amount) => {
+                const newDate = new Date(navDate);
+                if (viewMode === 'month') {
+                    newDate.setMonth(newDate.getMonth() + amount);
+                } else {
+                    newDate.setDate(newDate.getDate() + (amount * 7));
+                }
+                setNavDate(newDate);
+            };
+
+            const getDaysToRender = () => {
+                const year = navDate.getFullYear();
+                const month = navDate.getMonth();
+                const days = [];
+
+                if (viewMode === 'month') {
+                    const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0 (Dom) - 6 (Sab)
+                    const daysInMonth = new Date(year, month + 1, 0).getDate();
+                    
+                    // Rellenar espacios vacíos antes del día 1
+                    for (let i = 0; i < firstDayOfMonth; i++) {
+                        days.push(null);
+                    }
+                    // Días reales
+                    for (let i = 1; i <= daysInMonth; i++) {
+                        days.push(new Date(year, month, i));
+                    }
+                } else {
+                    // Semana actual
+                    const currentDay = navDate.getDay();
+                    const diff = navDate.getDate() - currentDay; // Ajuste para que empiece en Domingo
+                    const startOfWeek = new Date(navDate);
+                    startOfWeek.setDate(diff);
+
+                    for (let i = 0; i < 7; i++) {
+                        const d = new Date(startOfWeek);
+                        d.setDate(startOfWeek.getDate() + i);
+                        days.push(d);
+                    }
+                }
+                return days;
+            };
+
+            const daysRender = getDaysToRender();
+            const weekDays = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+
+            const getTitle = () => {
+                if (viewMode === 'month') {
+                    return navDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+                } else {
+                    // Rango de semana
+                    const start = daysRender[0];
+                    const end = daysRender[6];
+                    return `${start.getDate()} ${start.toLocaleDateString('es-ES', { month: 'short' })} - ${end.getDate()} ${end.toLocaleDateString('es-ES', { month: 'short' })}`;
+                }
+            };
 
             return (
                 <div className="pt-8">
-                    <h2 className="text-2xl font-bold mb-6">Historial</h2>
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-bold">Historial</h2>
+                        <div className="bg-gray-800 p-1 rounded-lg flex text-xs font-bold">
+                            <button onClick={() => setViewMode('month')} className={`px-3 py-1 rounded-md transition-all ${viewMode === 'month' ? 'bg-gray-700 text-white shadow' : 'text-gray-500'}`}>Mes</button>
+                            <button onClick={() => setViewMode('week')} className={`px-3 py-1 rounded-md transition-all ${viewMode === 'week' ? 'bg-gray-700 text-white shadow' : 'text-gray-500'}`}>Semana</button>
+                        </div>
+                    </div>
+                    
                     <div className="bg-gray-800 p-6 rounded-2xl mb-6">
-                        <h3 className="text-sm uppercase tracking-wider text-gray-400 mb-4 font-bold">Este Mes</h3>
+                        <div className="flex justify-between items-center mb-4">
+                            <button onClick={() => changeTime(-1)} className="p-2 hover:bg-gray-700 rounded-full text-gray-400"><ChevronLeft size={20}/></button>
+                            <h3 className="text-sm uppercase tracking-wider text-gray-300 font-bold capitalize">{getTitle()}</h3>
+                            <button onClick={() => changeTime(1)} className="p-2 hover:bg-gray-700 rounded-full text-gray-400"><ChevronRight size={20}/></button>
+                        </div>
+                        
+                        <div className="grid grid-cols-7 gap-2 mb-2">
+                             {weekDays.map((d, i) => <span key={i} className="text-center text-[10px] text-gray-500 font-bold">{d}</span>)}
+                        </div>
+
                         <div className="grid grid-cols-7 gap-2">
-                            {days.map(dateStr => {
+                            {daysRender.map((dateObj, i) => {
+                                if (!dateObj) return <div key={i}></div>; // Espacio vacío
+
+                                const dateStr = formatDate(dateObj);
                                 const totals = getDayTotals(dateStr);
                                 const status = getDayStatus(totals, profile);
                                 const hasData = totals.cals > 0;
                                 const isToday = dateStr === formatDate(new Date());
-                                let bgClass = "bg-gray-900 text-gray-600";
+                                
+                                let bgClass = "bg-gray-900 text-gray-600 hover:bg-gray-700";
                                 let style = {};
+                                
                                 if (hasData) {
                                     bgClass = status.passed ? "bg-green-500 text-black font-bold shadow-[0_0_10px_rgba(34,197,94,0.3)]" : "bg-red-500/20 text-red-500 border border-red-500/30";
                                 }
                                 if (isToday) {
                                     style.border = '2px solid white';
                                 }
+
                                 return (
                                     <button key={dateStr} onClick={() => onDateSelect(dateStr)} className={`aspect-square rounded-lg flex flex-col items-center justify-center text-xs transition-all hover:scale-110 ${bgClass}`} style={style}>
-                                        <span>{parseInt(dateStr.split('-')[2])}</span>
+                                        <span>{dateObj.getDate()}</span>
                                     </button>
                                 )
                             })}
                         </div>
                     </div>
+
                     <div className="grid grid-cols-2 gap-4">
                         <div className="bg-gray-800 p-5 rounded-2xl">
                             <p className="text-gray-400 text-xs uppercase font-bold">Días Cumplidos</p>
@@ -748,13 +1052,18 @@
             </div>
         );
 
-        const FoodSelector = ({ foods, onAddFoodToDb, onLogFood, profileId, shareFoods }) => {
+        const FoodSelector = ({ foods, onAddFoodToDb, onEditFoodInDb, onDeleteFoodInDb, onLogFood, onQuickLog, profileId, shareFoods }) => {
             const [mode, setMode] = useState('search'); 
             const [search, setSearch] = useState('');
             const [selectedFood, setSelectedFood] = useState(null);
             const [grams, setGrams] = useState('');
 
-            // Form create
+            // Estado para el escáner
+            const [showScanner, setShowScanner] = useState(false);
+            const [scannerError, setScannerError] = useState(null);
+
+            // Form create/edit
+            const [editingId, setEditingId] = useState(null);
             const [newName, setNewName] = useState('');
             const [newCals, setNewCals] = useState('');
             const [newProt, setNewProt] = useState('');
@@ -768,17 +1077,130 @@
                 });
             }, [foods, search, profileId, shareFoods]);
 
+            // Efecto para el escáner
+            useEffect(() => {
+                let html5QrcodeScanner;
+                if (showScanner) {
+                    const onScanSuccess = async (decodedText, decodedResult) => {
+                        // Detener escáner
+                        try {
+                            await html5QrcodeScanner.clear();
+                        } catch (e) { console.error("Error clearing scanner", e); }
+                        
+                        setShowScanner(false);
+
+                        // Consultar OpenFoodFacts
+                        try {
+                            const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${decodedText}.json`);
+                            const data = await response.json();
+                            
+                            if (data.status === 1) {
+                                // Producto encontrado
+                                const product = data.product;
+                                setEditingId(null);
+                                setNewName(product.product_name || 'Producto Escaneado');
+                                // Intentar obtener kcal
+                                const kcal = product.nutriments['energy-kcal_100g'] || product.nutriments['energy-kcal'];
+                                setNewCals(kcal ? Math.round(kcal) : '');
+                                // Intentar obtener proteínas
+                                const prot = product.nutriments.proteins_100g || product.nutriments.proteins;
+                                setNewProt(prot ? parseFloat(prot).toFixed(1) : '');
+                                setNewEmoji('📦'); // Emoji por defecto para escaneados
+                                setMode('create');
+                            } else {
+                                alert('Producto no encontrado en OpenFoodFacts. Puedes crearlo manualmente.');
+                                setMode('create');
+                            }
+                        } catch (error) {
+                            console.error("Error fetching product", error);
+                            alert('Error al consultar el producto. Intenta manualmente.');
+                            setMode('create');
+                        }
+                    };
+
+                    const onScanFailure = (error) => {
+                        // No hacer nada, es ruido normal mientras escanea
+                    };
+
+                    html5QrcodeScanner = new Html5QrcodeScanner(
+                        "reader",
+                        { fps: 10, qrbox: { width: 250, height: 250 } },
+                        /* verbose= */ false
+                    );
+                    html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+                }
+
+                return () => {
+                    if (html5QrcodeScanner) {
+                        html5QrcodeScanner.clear().catch(e => console.error(e));
+                    }
+                };
+            }, [showScanner]);
+
+            const startCreate = () => {
+                setEditingId(null);
+                setNewName(search);
+                setNewCals('');
+                setNewProt('');
+                setNewEmoji('');
+                setMode('create');
+            };
+
+            const startEdit = (food) => {
+                setEditingId(food.id);
+                setNewName(food.name);
+                setNewCals(food.calories);
+                setNewProt(food.protein);
+                setNewEmoji(food.emoji || '');
+                setMode('create'); // Reutilizamos vista de crear
+            };
+
+            const confirmDelete = (food) => {
+                if(window.confirm(`¿Eliminar "${food.name}" permanentemente?`)) {
+                    onDeleteFoodInDb(food.id);
+                }
+            };
+
             const handleSaveFood = () => {
                 if (!newName || !newCals) return;
-                onAddFoodToDb({
+                const data = {
                     name: newName,
                     calories: parseInt(newCals),
-                    protein: parseInt(newProt) || 0,
+                    protein: parseFloat(newProt) || 0,
                     emoji: newEmoji
-                });
+                };
+
+                if (editingId) {
+                    onEditFoodInDb(editingId, data);
+                } else {
+                    onAddFoodToDb(data);
+                }
+                
                 setMode('search');
-                setSearch(newName); 
+                setSearch(newName);
             };
+
+            const handleQuickSubmit = () => {
+                 if (!newName || !newCals) return;
+                 onQuickLog({
+                    name: newName,
+                    calories: newCals,
+                    protein: newProt,
+                    emoji: newEmoji
+                 });
+            };
+
+            // Vista del Escáner
+            if (showScanner) {
+                return (
+                    <div className="flex flex-col h-full bg-black relative">
+                        <button onClick={() => setShowScanner(false)} className="absolute top-4 right-4 z-50 p-2 bg-gray-800 rounded-full text-white"><X /></button>
+                        <h4 className="text-center text-white font-bold py-4">Escanea el Código de Barras</h4>
+                        <div id="reader" className="w-full flex-1 bg-black"></div>
+                        <p className="text-center text-gray-400 p-4 text-xs">Apunta la cámara al código de barras del producto.</p>
+                    </div>
+                );
+            }
 
             if (mode === 'create') {
                 return (
@@ -786,7 +1208,7 @@
                         <div className="flex-1 space-y-4 overflow-y-auto">
                             <div className="flex gap-2 mb-6">
                                 <button onClick={() => setMode('search')} className="p-2 text-gray-400"><ChevronLeft /></button>
-                                <h4 className="text-lg font-bold pt-1">Crear Nuevo Alimento</h4>
+                                <h4 className="text-lg font-bold pt-1">{editingId ? 'Editar Alimento' : 'Crear Nuevo Alimento'}</h4>
                             </div>
                             <div className="flex justify-center mb-6">
                                 <input type="text" className="bg-transparent text-6xl text-center w-full outline-none placeholder-gray-700" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={2} placeholder="?" />
@@ -798,7 +1220,32 @@
                                 <Input label="Proteína / 100g" type="number" value={newProt} onChange={e => setNewProt(e.target.value)} placeholder="0" />
                             </div>
                         </div>
-                        <Button onClick={handleSaveFood} fullWidth className="mt-4">Guardar Alimento</Button>
+                        <Button onClick={handleSaveFood} fullWidth className="mt-4">{editingId ? 'Actualizar Alimento' : 'Guardar Alimento'}</Button>
+                    </div>
+                );
+            }
+
+            if (mode === 'manual') {
+                return (
+                    <div className="flex flex-col h-full">
+                        <div className="flex-1 space-y-4 overflow-y-auto">
+                            <div className="flex gap-2 mb-6">
+                                <button onClick={() => setMode('search')} className="p-2 text-gray-400"><ChevronLeft /></button>
+                                <h4 className="text-lg font-bold pt-1 text-yellow-500 flex items-center gap-2"><Zap size={18}/> Registro Rápido</h4>
+                            </div>
+                            <div className="p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-yellow-500 text-sm mb-4">
+                                Este alimento solo se guardará en tu registro de hoy y no se añadirá a tu base de datos global.
+                            </div>
+                            <div className="flex justify-center mb-6">
+                                <input type="text" className="bg-transparent text-6xl text-center w-full outline-none placeholder-gray-700" value={newEmoji} onChange={(e) => setNewEmoji(e.target.value)} maxLength={2} placeholder="⚡" />
+                            </div>
+                            <Input label="¿Qué comiste?" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Ej: Hamburguesa" />
+                            <div className="grid grid-cols-2 gap-4">
+                                <Input label="Calorías Totales" type="number" value={newCals} onChange={e => setNewCals(e.target.value)} placeholder="0" />
+                                <Input label="Proteína Total" type="number" value={newProt} onChange={e => setNewProt(e.target.value)} placeholder="0" />
+                            </div>
+                        </div>
+                        <Button onClick={handleQuickSubmit} variant="warning" fullWidth className="mt-4">Agregar a Hoy</Button>
                     </div>
                 );
             }
@@ -825,7 +1272,7 @@
                             {grams && (
                                 <div className="bg-gray-800 p-4 rounded-xl text-center animate-fade-in mb-4">
                                     <p className="text-gray-400 text-sm">Total a registrar:</p>
-                                    <p className="text-2xl font-bold text-white">{Math.round(selectedFood.calories * (grams/100))} kcal <span className="text-gray-600">|</span> {Math.round(selectedFood.protein * (grams/100))}g prot</p>
+                                    <p className="text-2xl font-bold text-white">{Math.round(selectedFood.calories * (grams/100))} kcal <span className="text-gray-600">|</span> {(selectedFood.protein * (grams/100)).toFixed(1)}g prot</p>
                                 </div>
                             )}
                         </div>
@@ -836,26 +1283,54 @@
 
             return (
                 <div className="flex flex-col h-full">
-                    <div className="relative mb-4">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
-                        <input type="text" placeholder="Buscar alimento..." className="w-full bg-gray-800 pl-12 pr-4 py-4 rounded-xl text-white outline-none focus:ring-2 focus:ring-green-500/50" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+                    <div className="relative mb-4 flex gap-2">
+                        <div className="relative flex-1">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
+                            <input type="text" placeholder="Buscar..." className="w-full bg-gray-800 pl-12 pr-4 py-4 rounded-xl text-white outline-none focus:ring-2 focus:ring-green-500/50" value={search} onChange={(e) => setSearch(e.target.value)} />
+                        </div>
+                        <button onClick={() => setShowScanner(true)} className="bg-gray-800 p-4 rounded-xl text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 transition-colors">
+                            <ScanBarcode size={24} />
+                        </button>
                     </div>
                     <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-                        <button onClick={() => setMode('create')} className="w-full p-4 border border-dashed border-gray-700 rounded-xl text-gray-400 flex items-center justify-center gap-2 hover:text-white hover:border-gray-500 transition-colors">
-                            <Plus size={16} /> Crear "{search || 'nuevo'}"
+                        <button onClick={() => { setMode('manual'); setNewName(search); setNewCals(''); setNewProt(''); setNewEmoji(''); }} className="w-full p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-yellow-500 flex items-center justify-center gap-2 hover:bg-yellow-500/20 transition-colors mb-2">
+                            <Zap size={16} /> Agregar Manualmente (Solo hoy)
                         </button>
-                        {filteredFoods.map(food => (
-                            <button key={food.id} onClick={() => setSelectedFood(food)} className="w-full bg-gray-800 p-4 rounded-xl flex items-center justify-between hover:bg-gray-750 active:bg-gray-700 transition-colors text-left">
-                                <div className="flex items-center gap-3">
-                                    <span className="text-2xl">{food.emoji}</span>
-                                    <div>
-                                        <p className="font-bold text-white">{food.name}</p>
-                                        <p className="text-xs text-gray-500">{food.calories} kcal • {food.protein}g prot</p>
+                        <button onClick={startCreate} className="w-full p-4 border border-dashed border-gray-700 rounded-xl text-gray-400 flex items-center justify-center gap-2 hover:text-white hover:border-gray-500 transition-colors">
+                            <Plus size={16} /> Crear Alimento Nuevo
+                        </button>
+                        {filteredFoods.map(food => {
+                            const isOwner = food.createdBy === profileId;
+                            return (
+                                <div key={food.id} className="w-full bg-gray-800 p-4 rounded-xl flex items-center justify-between mb-2 group relative border border-gray-800 hover:border-gray-700 transition-all">
+                                    {/* Area Principal Clickable */}
+                                    <button onClick={() => setSelectedFood(food)} className="flex-1 flex items-center gap-3 text-left">
+                                        <span className="text-2xl">{food.emoji}</span>
+                                        <div>
+                                            <p className="font-bold text-white">{food.name}</p>
+                                            <p className="text-xs text-gray-500">{food.calories} kcal • {food.protein}g prot</p>
+                                        </div>
+                                    </button>
+                                    
+                                    {/* Acciones */}
+                                    <div className="flex items-center gap-2">
+                                        {isOwner && (
+                                            <>
+                                                <button onClick={(e) => { e.stopPropagation(); startEdit(food); }} className="p-2 text-gray-600 hover:text-blue-400 transition-colors" title="Editar">
+                                                    <Edit2 size={16} />
+                                                </button>
+                                                <button onClick={(e) => { e.stopPropagation(); confirmDelete(food); }} className="p-2 text-gray-600 hover:text-red-500 transition-colors" title="Eliminar">
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </>
+                                        )}
+                                        <button onClick={() => setSelectedFood(food)} className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-green-500 hover:bg-green-500 hover:text-white transition-colors ml-2">
+                                            <Plus size={16} />
+                                        </button>
                                     </div>
                                 </div>
-                                <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-green-500"><Plus size={16} /></div>
-                            </button>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             );
